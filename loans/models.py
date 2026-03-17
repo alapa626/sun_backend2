@@ -1,7 +1,4 @@
 from django.db import models
-
-# Create your models here.
-from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 
@@ -10,12 +7,10 @@ class Customer(models.Model):
     vendor = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name='customers'
     )
-    # Personal
     name = models.CharField(max_length=200)
     phone = models.CharField(max_length=15)
     address = models.TextField(blank=True)
     aadhaar = models.CharField(max_length=20, blank=True)
-    # Vehicle
     vehicle_type = models.CharField(max_length=50, blank=True)
     vehicle_model = models.CharField(max_length=100, blank=True)
     vehicle_number = models.CharField(max_length=30, blank=True)
@@ -34,15 +29,17 @@ class Loan(models.Model):
     customer = models.ForeignKey(
         Customer, on_delete=models.CASCADE, related_name='loans'
     )
-    # Loan config
     loan_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    interest_rate = models.DecimalField(
-        max_digits=5, decimal_places=2, default=0
-    )
+    interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     tenure_months = models.PositiveIntegerField(default=12)
     loan_date = models.DateField(default=timezone.now)
 
-    # Guarantor
+    # ✅ NEW: Fixed fine/penalty amount per missed EMI (set by owner)
+    fine_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Fixed penalty amount charged per missed/late EMI installment"
+    )
+
     guarantor_name = models.CharField(max_length=200, blank=True)
     guarantor_phone = models.CharField(max_length=15, blank=True)
     guarantor_address = models.TextField(blank=True)
@@ -58,7 +55,6 @@ class Loan(models.Model):
     def __str__(self):
         return f"Loan #{self.id} — {self.customer.name}"
 
-    # ── Computed properties ───────────────────────────────────────
     @property
     def total_interest(self):
         return float(self.loan_amount) * (float(self.interest_rate) / 100) * (self.tenure_months / 12)
@@ -75,9 +71,7 @@ class Loan(models.Model):
 
     @property
     def total_paid(self):
-        return sum(
-            float(p.paid_amount) for p in self.emi_payments.all()
-        )
+        return sum(float(p.paid_amount) for p in self.emi_payments.all())
 
     @property
     def remaining(self):
@@ -99,9 +93,7 @@ class EmiPayment(models.Model):
     installment_number = models.PositiveIntegerField()
     due_date = models.DateField()
     emi_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    paid_amount = models.DecimalField(
-        max_digits=12, decimal_places=2, default=0
-    )
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     is_paid = models.BooleanField(default=False)
     paid_date = models.DateField(null=True, blank=True)
 

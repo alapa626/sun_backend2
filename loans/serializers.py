@@ -7,13 +7,14 @@ from .utils import generate_emi_schedule
 class EmiPaymentSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
+    fine_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = EmiPayment
         fields = [
             'id', 'installment_number', 'due_date',
             'emi_amount', 'paid_amount', 'is_paid',
-            'paid_date', 'balance', 'is_overdue',
+            'paid_date', 'balance', 'is_overdue', 'fine_amount',
         ]
 
     def get_balance(self, obj):
@@ -25,6 +26,14 @@ class EmiPaymentSerializer(serializers.ModelSerializer):
         if obj.is_paid:
             return False
         return obj.due_date < timezone.now().date()
+
+    def get_fine_amount(self, obj):
+        """Return fine amount from parent loan if this EMI is overdue and unpaid."""
+        if obj.is_paid:
+            return 0
+        if obj.due_date < timezone.now().date():
+            return float(obj.loan.fine_amount)
+        return 0
 
 
 class LoanSerializer(serializers.ModelSerializer):
@@ -42,6 +51,7 @@ class LoanSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'customer', 'loan_amount', 'interest_rate',
             'tenure_months', 'loan_date',
+            'fine_amount',                          # ✅ NEW
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
             'total_interest', 'total_payable', 'emi',
@@ -56,6 +66,7 @@ class LoanCreateSerializer(serializers.ModelSerializer):
         model = Loan
         fields = [
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
+            'fine_amount',                          # ✅ NEW
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
         ]
@@ -93,38 +104,27 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
 
 
 class CustomerCreateSerializer(serializers.ModelSerializer):
-    # Loan fields — create customer + first loan in one API call
-    loan_amount = serializers.DecimalField(
-        max_digits=12, decimal_places=2, write_only=True
-    )
-    interest_rate = serializers.DecimalField(
-        max_digits=5, decimal_places=2, write_only=True, default=0
-    )
+    loan_amount = serializers.DecimalField(max_digits=12, decimal_places=2, write_only=True)
+    interest_rate = serializers.DecimalField(max_digits=5, decimal_places=2, write_only=True, default=0)
     tenure_months = serializers.IntegerField(write_only=True, default=12)
     loan_date = serializers.DateField(write_only=True, required=False)
-    guarantor_name = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
+    fine_amount = serializers.DecimalField(             # ✅ NEW
+        max_digits=10, decimal_places=2,
+        write_only=True, default=0, required=False
     )
-    guarantor_phone = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
-    guarantor_address = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
-    guarantor_aadhaar = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
-    guarantor_relation = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
+    guarantor_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_phone = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_address = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_aadhaar = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_relation = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = Customer
         fields = [
             'id', 'name', 'phone', 'address', 'aadhaar',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
-            # Loan fields
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
+            'fine_amount',                          # ✅ NEW
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
         ]
@@ -135,6 +135,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             'interest_rate': validated_data.pop('interest_rate', 0),
             'tenure_months': validated_data.pop('tenure_months', 12),
             'loan_date': validated_data.pop('loan_date', timezone.now().date()),
+            'fine_amount': validated_data.pop('fine_amount', 0),   # ✅ NEW
             'guarantor_name': validated_data.pop('guarantor_name', ''),
             'guarantor_phone': validated_data.pop('guarantor_phone', ''),
             'guarantor_address': validated_data.pop('guarantor_address', ''),
@@ -143,5 +144,5 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         }
         customer = Customer.objects.create(**validated_data)
         loan = Loan.objects.create(customer=customer, **loan_fields)
-        generate_emi_schedule(loan)   # ← FIXED
+        generate_emi_schedule(loan)
         return customer
