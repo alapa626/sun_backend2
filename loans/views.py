@@ -230,22 +230,24 @@ class DashboardView(APIView):
         # ── Build collections for each period ────────────────────────
         result = []
         for period in periods:
-            # ✅ FIX: Use paid_date for collected (actual payment date)
-            # Use due_date for expected (when payment was scheduled)
+            # ✅ collected = actual payments received in this period (by paid_date)
             paid_emis = EmiPayment.objects.filter(
                 loan__customer__vendor=request.user,
                 is_paid=True,
                 paid_date__gte=period['start'],
                 paid_date__lte=period['end'],
             )
-            due_emis = EmiPayment.objects.filter(
-                loan__customer__vendor=request.user,
-                due_date__gte=period['start'],
-                due_date__lte=period['end'],
+
+            # ✅ FIXED: Total Given = total loan amount given out in this period
+            # Uses loan_date (when loan was created/disbursed)
+            loans_given = Loan.objects.filter(
+                customer__vendor=request.user,
+                loan_date__gte=period['start'],
+                loan_date__lte=period['end'],
             )
 
             collected = sum(float(e.paid_amount) for e in paid_emis)
-            expected  = sum(float(e.emi_amount)  for e in due_emis)
+            expected  = sum(float(l.loan_amount) for l in loans_given)
 
             result.append({
                 'month':     period['label'],
