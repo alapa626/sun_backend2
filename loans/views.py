@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Sum, Q
 from django.utils import timezone
-from datetime import timedelta, date
+from datetime import timedelta, date, datetime
 from .models import Customer, Loan, EmiPayment
 from .serializers import (
     CustomerListSerializer, CustomerDetailSerializer,
@@ -134,7 +134,7 @@ class LoanDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  EMI PAYMENT VIEW
+#  EMI PAYMENT VIEW  ✅ UPDATED: reads payment_date from request
 # ═══════════════════════════════════════════════════════════════════════
 
 class RecordPaymentView(APIView):
@@ -161,7 +161,23 @@ class RecordPaymentView(APIView):
 
         emi.paid_amount = paid_amount
         emi.is_paid = paid_amount >= float(emi.emi_amount)
-        emi.paid_date = date.today() if paid_amount > 0 else None
+
+        # ✅ Use owner's chosen payment_date if provided, else fallback to today
+        if paid_amount > 0:
+            payment_date_str = request.data.get('payment_date')
+            if payment_date_str:
+                try:
+                    emi.paid_date = datetime.strptime(
+                        payment_date_str, '%Y-%m-%d'
+                    ).date()
+                except ValueError:
+                    # If date format is wrong, fallback to today
+                    emi.paid_date = date.today()
+            else:
+                emi.paid_date = date.today()
+        else:
+            emi.paid_date = None
+
         emi.save()
 
         return Response(EmiPaymentSerializer(emi).data)
