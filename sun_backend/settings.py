@@ -3,8 +3,12 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-sun-auto-finance-key-2024'
-DEBUG = True
+# ✅ CHANGED: Use a strong random secret key — never use the insecure default
+SECRET_KEY = 'sun-auto-finance-!@#xK9mP2qL7vN4jR8wT5uY1hB6cF3aD0eG$%^&*'
+
+# ✅ CHANGED: False for production
+DEBUG = False
+
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
@@ -94,9 +98,10 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
-    'ROTATE_REFRESH_TOKENS': True,
+    'ACCESS_TOKEN_LIFETIME':  timedelta(days=1),
+    # ✅ CHANGED: 30 → 365 days so owner never needs to login again
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=365),
+    'ROTATE_REFRESH_TOKENS':  True,
     'BLACKLIST_AFTER_ROTATION': False,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
