@@ -1,6 +1,4 @@
 from django.shortcuts import render
-
-# Create your views here.
 from rest_framework import generics, permissions, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -28,8 +26,6 @@ class CustomerListCreateView(generics.ListCreateAPIView):
         qs = Customer.objects.filter(
             vendor=self.request.user
         ).prefetch_related('loans__emi_payments')
-
-        # Search
         q = self.request.query_params.get('q', '').strip()
         if q:
             qs = qs.filter(
@@ -52,7 +48,6 @@ class CustomerListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         customer = serializer.save(vendor=request.user)
-        # Return full detail
         return Response(
             CustomerDetailSerializer(customer).data,
             status=status.HTTP_201_CREATED,
@@ -128,13 +123,12 @@ class LoanDetailView(generics.RetrieveUpdateDestroyAPIView):
         )
         serializer.is_valid(raise_exception=True)
         loan = serializer.save()
-        # Regenerate unpaid EMIs preserving paid ones
         regenerate_unpaid_schedule(loan)
         return Response(LoanSerializer(loan).data)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  EMI PAYMENT VIEW  ✅ UPDATED: reads payment_date from request
+#  EMI PAYMENT VIEW
 # ═══════════════════════════════════════════════════════════════════════
 
 class RecordPaymentView(APIView):
@@ -162,7 +156,6 @@ class RecordPaymentView(APIView):
         emi.paid_amount = paid_amount
         emi.is_paid = paid_amount >= float(emi.emi_amount)
 
-        # ✅ Use owner's chosen payment_date if provided, else fallback to today
         if paid_amount > 0:
             payment_date_str = request.data.get('payment_date')
             if payment_date_str:
@@ -171,7 +164,6 @@ class RecordPaymentView(APIView):
                         payment_date_str, '%Y-%m-%d'
                     ).date()
                 except ValueError:
-                    # If date format is wrong, fallback to today
                     emi.paid_date = date.today()
             else:
                 emi.paid_date = date.today()
@@ -179,12 +171,11 @@ class RecordPaymentView(APIView):
             emi.paid_date = None
 
         emi.save()
-
         return Response(EmiPaymentSerializer(emi).data)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  DASHBOARD VIEW
+#  DASHBOARD VIEW — supports ?mode=daily|weekly|monthly|custom&days=N
 # ═══════════════════════════════════════════════════════════════════════
 
 class DashboardView(APIView):
@@ -197,15 +188,13 @@ class DashboardView(APIView):
 
         customers = Customer.objects.filter(vendor=request.user)
 
-        total_lent = sum(float(l.loan_amount) for l in loans)
-        total_payable = sum(l.total_payable for l in loans)
+        total_lent      = sum(float(l.loan_amount) for l in loans)
+        total_payable   = sum(l.total_payable for l in loans)
         total_collected = sum(l.total_paid for l in loans)
-        total_pending = max(0, total_payable - total_collected)
+        total_pending   = max(0, total_payable - total_collected)
+        active_count    = sum(1 for l in loans if l.is_active)
+        closed_count    = sum(1 for l in loans if not l.is_active)
 
-        active_count = sum(1 for l in loans if l.is_active)
-        closed_count = sum(1 for l in loans if not l.is_active)
-
-        # Overdue EMIs
         now = timezone.now().date()
         overdue_count = EmiPayment.objects.filter(
             loan__customer__vendor=request.user,
@@ -213,41 +202,133 @@ class DashboardView(APIView):
             due_date__lt=now,
         ).count()
 
-        # Monthly collections — last 6 months
-        monthly = []
-        for i in range(5, -1, -1):
-            ref = now.replace(day=1) - timedelta(days=1)
-            # Go back i months
-            m = now.month - i
-            y = now.year
-            while m <= 0:
-                m += 12
-                y -= 1
-            month_emis = EmiPayment.objects.filter(
+        # ── Flexible time range ──────────────────────────────────────
+        # mode: monthly (default) | weekly | daily | custom
+        # days: number of days to look back (used for custom/daily/weekly)
+        mode = request.query_params.get('mode', 'monthly')
+        days_param = request.query_params.get('days', None)
+
+        if mode == 'daily' or (days_param and int(days_param) == 1):
+            # Single day — show hourly breakdown (today only)
+            periods = self._build_daily_periods(now)
+        elif mode == 'weekly' or (days_param and int(days_param) == 7):
+            # Last 7 days — show each day
+            periods = self._build_day_periods(now, 7)
+        elif days_param:
+            # Custom number of days
+            days = int(days_param)
+            if days <= 31:
+                # Show each day
+                periods = self._build_day_periods(now, days)
+            else:
+                # Show each week
+                periods = self._build_week_periods(now, days)
+        else:
+            # Default: last 6 months
+            periods = self._build_monthly_periods(now, 6)
+
+        # ── Build collections for each period ────────────────────────
+        result = []
+        for period in periods:
+            # ✅ FIX: Use paid_date for collected (actual payment date)
+            # Use due_date for expected (when payment was scheduled)
+            paid_emis = EmiPayment.objects.filter(
                 loan__customer__vendor=request.user,
-                due_date__year=y,
-                due_date__month=m,
+                is_paid=True,
+                paid_date__gte=period['start'],
+                paid_date__lte=period['end'],
             )
-            collected = sum(float(e.paid_amount) for e in month_emis)
-            expected = sum(float(e.emi_amount) for e in month_emis)
-            monthly.append({
-                'month': date(y, m, 1).strftime('%b'),
-                'year': y,
+            due_emis = EmiPayment.objects.filter(
+                loan__customer__vendor=request.user,
+                due_date__gte=period['start'],
+                due_date__lte=period['end'],
+            )
+
+            collected = sum(float(e.paid_amount) for e in paid_emis)
+            expected  = sum(float(e.emi_amount)  for e in due_emis)
+
+            result.append({
+                'month':     period['label'],
+                'year':      period['start'].year,
                 'collected': round(collected, 2),
-                'expected': round(expected, 2),
+                'expected':  round(expected, 2),
+                'start':     period['start'].isoformat(),
+                'end':       period['end'].isoformat(),
             })
 
         return Response({
-            'total_customers': customers.count(),
-            'total_lent': round(total_lent, 2),
-            'total_payable': round(total_payable, 2),
-            'total_collected': round(total_collected, 2),
-            'total_pending': round(total_pending, 2),
-            'active_loans': active_count,
-            'closed_loans': closed_count,
-            'overdue_emis': overdue_count,
-            'monthly_collections': monthly,
+            'total_customers':     customers.count(),
+            'total_lent':          round(total_lent, 2),
+            'total_payable':       round(total_payable, 2),
+            'total_collected':     round(total_collected, 2),
+            'total_pending':       round(total_pending, 2),
+            'active_loans':        active_count,
+            'closed_loans':        closed_count,
+            'overdue_emis':        overdue_count,
+            'monthly_collections': result,
         })
+
+    # ── Period builders ──────────────────────────────────────────────
+
+    def _build_monthly_periods(self, today, count):
+        """Last N months, one period per month."""
+        periods = []
+        for i in range(count - 1, -1, -1):
+            m = today.month - i
+            y = today.year
+            while m <= 0:
+                m += 12
+                y -= 1
+            # First and last day of the month
+            first = date(y, m, 1)
+            if m == 12:
+                last = date(y + 1, 1, 1) - timedelta(days=1)
+            else:
+                last = date(y, m + 1, 1) - timedelta(days=1)
+            periods.append({
+                'label': first.strftime('%b'),
+                'start': first,
+                'end':   min(last, today),
+            })
+        return periods
+
+    def _build_day_periods(self, today, count):
+        """Last N days, one period per day."""
+        periods = []
+        for i in range(count - 1, -1, -1):
+            d = today - timedelta(days=i)
+            periods.append({
+                'label': d.strftime('%d %b') if count > 7 else d.strftime('%a'),
+                'start': d,
+                'end':   d,
+            })
+        return periods
+
+    def _build_week_periods(self, today, days):
+        """Group into weeks."""
+        periods = []
+        start = today - timedelta(days=days - 1)
+        current = start
+        while current <= today:
+            week_end = min(current + timedelta(days=6), today)
+            periods.append({
+                'label': f"{current.strftime('%d %b')}",
+                'start': current,
+                'end':   week_end,
+            })
+            current = week_end + timedelta(days=1)
+        return periods
+
+    def _build_daily_periods(self, today):
+        """Today broken into morning / afternoon / evening / night."""
+        periods = [
+            {'label': 'Morn',  'start': today, 'end': today},
+            {'label': 'After', 'start': today, 'end': today},
+            {'label': 'Eve',   'start': today, 'end': today},
+            {'label': 'Night', 'start': today, 'end': today},
+        ]
+        # For daily we just return today as one period for simplicity
+        return [{'label': 'Today', 'start': today, 'end': today}]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -258,8 +339,7 @@ class RemindersView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        now = timezone.now().date()
-        today_end = now
+        now          = timezone.now().date()
         upcoming_end = now + timedelta(days=3)
 
         base_qs = EmiPayment.objects.filter(
@@ -269,30 +349,30 @@ class RemindersView(APIView):
 
         def format_item(emi):
             return {
-                'emi_id': emi.id,
-                'loan_id': emi.loan.id,
+                'emi_id':             emi.id,
+                'loan_id':            emi.loan.id,
                 'installment_number': emi.installment_number,
-                'due_date': emi.due_date,
-                'emi_amount': float(emi.emi_amount),
-                'paid_amount': float(emi.paid_amount),
+                'due_date':           emi.due_date,
+                'emi_amount':         float(emi.emi_amount),
+                'paid_amount':        float(emi.paid_amount),
                 'customer': {
-                    'id': emi.loan.customer.id,
-                    'name': emi.loan.customer.name,
-                    'phone': emi.loan.customer.phone,
-                    'vehicle_type': emi.loan.customer.vehicle_type,
+                    'id':             emi.loan.customer.id,
+                    'name':           emi.loan.customer.name,
+                    'phone':          emi.loan.customer.phone,
+                    'vehicle_type':   emi.loan.customer.vehicle_type,
                     'vehicle_number': emi.loan.customer.vehicle_number,
                 },
                 'days_overdue': max(0, (now - emi.due_date).days) if emi.due_date < now else 0,
-                'days_left': max(0, (emi.due_date - now).days) if emi.due_date >= now else 0,
+                'days_left':    max(0, (emi.due_date - now).days) if emi.due_date >= now else 0,
             }
 
-        overdue = [format_item(e) for e in base_qs.filter(due_date__lt=now).order_by('due_date')]
-        today = [format_item(e) for e in base_qs.filter(due_date=now)]
+        overdue  = [format_item(e) for e in base_qs.filter(due_date__lt=now).order_by('due_date')]
+        today    = [format_item(e) for e in base_qs.filter(due_date=now)]
         upcoming = [format_item(e) for e in base_qs.filter(due_date__gt=now, due_date__lte=upcoming_end).order_by('due_date')]
 
         return Response({
-            'overdue': overdue,
-            'today': today,
+            'overdue':  overdue,
+            'today':    today,
             'upcoming': upcoming,
         })
 
@@ -313,55 +393,54 @@ class StatementView(APIView):
             return Response({'error': 'Loan not found'}, status=404)
 
         customer = loan.customer
-        now = timezone.now().date()
+        now      = timezone.now().date()
 
         schedule = []
         for emi in loan.emi_payments.all():
             schedule.append({
                 'installment_number': emi.installment_number,
-                'due_date': emi.due_date,
-                'emi_amount': float(emi.emi_amount),
-                'paid_amount': float(emi.paid_amount),
-                'is_paid': emi.is_paid,
-                'paid_date': emi.paid_date,
-                'is_overdue': not emi.is_paid and emi.due_date < now,
-                'balance': max(0, float(emi.emi_amount) - float(emi.paid_amount)),
+                'due_date':           emi.due_date,
+                'emi_amount':         float(emi.emi_amount),
+                'paid_amount':        float(emi.paid_amount),
+                'is_paid':            emi.is_paid,
+                'paid_date':          emi.paid_date,
+                'is_overdue':         not emi.is_paid and emi.due_date < now,
+                'balance':            max(0, float(emi.emi_amount) - float(emi.paid_amount)),
             })
 
         return Response({
             'generated_on': now,
             'vendor': {
-                'business_name': getattr(
-                    request.user, 'vendor_profile', None
-                ) and request.user.vendor_profile.business_name or '',
+                'business_name': getattr(request.user, 'vendor_profile', None)
+                    and request.user.vendor_profile.business_name or '',
             },
             'customer': {
-                'name': customer.name,
-                'phone': customer.phone,
-                'address': customer.address,
-                'vehicle_type': customer.vehicle_type,
-                'vehicle_model': customer.vehicle_model,
+                'name':           customer.name,
+                'phone':          customer.phone,
+                'address':        customer.address,
+                'vehicle_type':   customer.vehicle_type,
+                'vehicle_model':  customer.vehicle_model,
                 'vehicle_number': customer.vehicle_number,
             },
             'loan': {
-                'id': loan.id,
-                'loan_amount': float(loan.loan_amount),
+                'id':            loan.id,
+                'loan_amount':   float(loan.loan_amount),
                 'interest_rate': float(loan.interest_rate),
                 'tenure_months': loan.tenure_months,
-                'loan_date': loan.loan_date,
-                'total_interest': round(loan.total_interest, 2),
+                'loan_date':     loan.loan_date,
+                'total_interest':round(loan.total_interest, 2),
                 'total_payable': round(loan.total_payable, 2),
-                'emi': round(loan.emi, 2),
-                'total_paid': round(loan.total_paid, 2),
-                'remaining': round(loan.remaining, 2),
-                'paid_count': loan.paid_count,
-                'is_active': loan.is_active,
+                'emi':           round(loan.emi, 2),
+                'total_paid':    round(loan.total_paid, 2),
+                'remaining':     round(loan.remaining, 2),
+                'paid_count':    loan.paid_count,
+                'is_active':     loan.is_active,
             },
             'guarantor': {
-                'name': loan.guarantor_name,
-                'phone': loan.guarantor_phone,
-                'address': loan.guarantor_address,
-                'aadhaar': loan.guarantor_aadhaar,
+                'name':     loan.guarantor_name,
+                'phone':    loan.guarantor_phone,
+                'address':  loan.guarantor_address,
+                'aadhaar':  loan.guarantor_aadhaar,
                 'relation': loan.guarantor_relation,
             },
             'emi_schedule': schedule,
