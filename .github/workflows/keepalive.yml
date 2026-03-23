@@ -2,7 +2,8 @@ name: Keep Render Alive
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '0 * * * *'    # every hour at :00
+    - cron: '30 * * * *'   # every hour at :30
   workflow_dispatch:
 
 jobs:
@@ -12,3 +13,4 @@ jobs:
       - name: Ping Render Server
         run: |
           curl https://sun-backend2-2.onrender.com
+          echo "Server pinged successfully!"
