@@ -1,8 +1,34 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Customer, Loan, EmiPayment
+from .models import Customer, Loan, EmiPayment, GoldItem
 from .utils import generate_emi_schedule
 
+
+# ═══════════════════════════════════════════════════════════════════════
+#  GOLD ITEM
+# ═══════════════════════════════════════════════════════════════════════
+
+class GoldItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GoldItem
+        fields = [
+            'id', 'item_type', 'item_description',
+            'weight_grams', 'purity', 'estimated_value',
+        ]
+
+
+class GoldItemCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GoldItem
+        fields = [
+            'item_type', 'item_description',
+            'weight_grams', 'purity', 'estimated_value',
+        ]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  EMI PAYMENT
+# ═══════════════════════════════════════════════════════════════════════
 
 class EmiPaymentSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
@@ -27,6 +53,10 @@ class EmiPaymentSerializer(serializers.ModelSerializer):
         return obj.due_date < timezone.now().date()
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  LOAN
+# ═══════════════════════════════════════════════════════════════════════
+
 class LoanSerializer(serializers.ModelSerializer):
     emi_payments = EmiPaymentSerializer(many=True, read_only=True)
     total_interest = serializers.ReadOnlyField()
@@ -41,7 +71,7 @@ class LoanSerializer(serializers.ModelSerializer):
         model = Loan
         fields = [
             'id', 'customer', 'loan_amount', 'interest_rate',
-            'tenure_months', 'loan_date',
+            'tenure_months', 'loan_date', 'fine_amount',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
             'total_interest', 'total_payable', 'emi',
@@ -56,20 +86,28 @@ class LoanCreateSerializer(serializers.ModelSerializer):
         model = Loan
         fields = [
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
+            'fine_amount',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
         ]
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  CUSTOMER — LIST
+# ═══════════════════════════════════════════════════════════════════════
+
 class CustomerListSerializer(serializers.ModelSerializer):
     active_loans_count = serializers.SerializerMethodField()
     total_loan_amount = serializers.SerializerMethodField()
+    total_gold_weight = serializers.SerializerMethodField()
+    gold_items_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Customer
         fields = [
-            'id', 'name', 'phone', 'address', 'aadhaar',
+            'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
+            'total_gold_weight', 'gold_items_count',
             'active_loans_count', 'total_loan_amount', 'created_at',
         ]
 
@@ -79,21 +117,53 @@ class CustomerListSerializer(serializers.ModelSerializer):
     def get_total_loan_amount(self, obj):
         return sum(float(loan.loan_amount) for loan in obj.loans.all())
 
+    def get_total_gold_weight(self, obj):
+        if obj.loan_type != 'gold':
+            return None
+        return float(sum(item.weight_grams for item in obj.gold_items.all()))
+
+    def get_gold_items_count(self, obj):
+        if obj.loan_type != 'gold':
+            return None
+        return obj.gold_items.count()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  CUSTOMER — DETAIL
+# ═══════════════════════════════════════════════════════════════════════
 
 class CustomerDetailSerializer(serializers.ModelSerializer):
     loans = LoanSerializer(many=True, read_only=True)
+    gold_items = GoldItemSerializer(many=True, read_only=True)
+    total_gold_weight = serializers.SerializerMethodField()
+    total_gold_value = serializers.SerializerMethodField()
 
     class Meta:
         model = Customer
         fields = [
-            'id', 'name', 'phone', 'address', 'aadhaar',
+            'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
+            'gold_items', 'total_gold_weight', 'total_gold_value',
             'loans', 'created_at',
         ]
 
+    def get_total_gold_weight(self, obj):
+        if obj.loan_type != 'gold':
+            return None
+        return float(sum(item.weight_grams for item in obj.gold_items.all()))
+
+    def get_total_gold_value(self, obj):
+        if obj.loan_type != 'gold':
+            return None
+        return float(sum(item.estimated_value for item in obj.gold_items.all()))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  CUSTOMER — CREATE  (vehicle + gold, single API call)
+# ═══════════════════════════════════════════════════════════════════════
 
 class CustomerCreateSerializer(serializers.ModelSerializer):
-    # Loan fields — create customer + first loan in one API call
+    # Loan fields
     loan_amount = serializers.DecimalField(
         max_digits=12, decimal_places=2, write_only=True
     )
@@ -102,6 +172,9 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
     )
     tenure_months = serializers.IntegerField(write_only=True, default=12)
     loan_date = serializers.DateField(write_only=True, required=False)
+    fine_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, write_only=True, default=0
+    )
     guarantor_name = serializers.CharField(
         write_only=True, required=False, allow_blank=True
     )
@@ -118,30 +191,71 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         write_only=True, required=False, allow_blank=True
     )
 
+    # Gold items (required when loan_type='gold')
+    gold_items = GoldItemCreateSerializer(
+        many=True, write_only=True, required=False
+    )
+
     class Meta:
         model = Customer
         fields = [
-            'id', 'name', 'phone', 'address', 'aadhaar',
+            'id', 'loan_type',
+            'name', 'phone', 'address', 'aadhaar',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
-            # Loan fields
+            'gold_items',
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
+            'fine_amount',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
         ]
 
+    def validate(self, data):
+        loan_type = data.get('loan_type', 'vehicle')
+
+        if loan_type == 'vehicle':
+            if not data.get('vehicle_model', '').strip():
+                raise serializers.ValidationError(
+                    {'vehicle_model': 'Vehicle model is required for vehicle loans.'}
+                )
+        elif loan_type == 'gold':
+            gold_items = data.get('gold_items', [])
+            if not gold_items:
+                raise serializers.ValidationError(
+                    {'gold_items': 'At least one gold item is required for gold loans.'}
+                )
+            for item in gold_items:
+                if float(item.get('weight_grams', 0)) <= 0:
+                    raise serializers.ValidationError(
+                        {'gold_items': 'Each gold item must have weight greater than 0.'}
+                    )
+        return data
+
     def create(self, validated_data):
         loan_fields = {
-            'loan_amount': validated_data.pop('loan_amount'),
-            'interest_rate': validated_data.pop('interest_rate', 0),
-            'tenure_months': validated_data.pop('tenure_months', 12),
-            'loan_date': validated_data.pop('loan_date', timezone.now().date()),
-            'guarantor_name': validated_data.pop('guarantor_name', ''),
-            'guarantor_phone': validated_data.pop('guarantor_phone', ''),
+            'loan_amount':       validated_data.pop('loan_amount'),
+            'interest_rate':     validated_data.pop('interest_rate', 0),
+            'tenure_months':     validated_data.pop('tenure_months', 12),
+            'loan_date':         validated_data.pop('loan_date', timezone.now().date()),
+            'fine_amount':       validated_data.pop('fine_amount', 0),
+            'guarantor_name':    validated_data.pop('guarantor_name', ''),
+            'guarantor_phone':   validated_data.pop('guarantor_phone', ''),
             'guarantor_address': validated_data.pop('guarantor_address', ''),
             'guarantor_aadhaar': validated_data.pop('guarantor_aadhaar', ''),
-            'guarantor_relation': validated_data.pop('guarantor_relation', ''),
+            'guarantor_relation':validated_data.pop('guarantor_relation', ''),
         }
+        gold_items_data = validated_data.pop('gold_items', [])
+
+        if validated_data.get('loan_type') == 'gold':
+            validated_data['vehicle_type'] = ''
+            validated_data['vehicle_model'] = ''
+            validated_data['vehicle_number'] = ''
+
         customer = Customer.objects.create(**validated_data)
+
+        for item_data in gold_items_data:
+            GoldItem.objects.create(customer=customer, **item_data)
+
         loan = Loan.objects.create(customer=customer, **loan_fields)
-        generate_emi_schedule(loan)   # ← FIXED
+        generate_emi_schedule(loan)
+
         return customer
