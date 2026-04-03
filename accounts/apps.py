@@ -12,7 +12,7 @@ class AccountsConfig(AppConfig):
             while True:
                 time.sleep(10 * 60)
                 try:
-                    requests.get("https://your-actual-url.onrender.com/health/")
+                    requests.get("https://sun-backend2-2.onrender.com/health/")
                     print("✅ Self ping successful")
                 except Exception as e:
                     print(f"❌ Self ping failed: {e}")
