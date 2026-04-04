@@ -2,15 +2,12 @@ name: Keep Render Alive
 
 on:
   schedule:
-    - cron: '0 * * * *'    # every hour at :00
-    - cron: '30 * * * *'   # every hour at :30
-  workflow_dispatch:
+    - cron: '*/5 * * * *'
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Render Server
+      - name: Ping Django Backend
         run: |
-          curl https://sun-backend2-2.onrender.com
-          echo "Server pinged successfully!"
+          curl -f https://sun-backend2-2.onrender.com/health/ || echo "Ping failed"
