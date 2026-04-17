@@ -5,14 +5,14 @@ from .views import (
     LoanListCreateView, LoanDetailView,
     RecordPaymentView, DashboardView,
     RemindersView, StatementView,
+    UploadPhotoView, GetPhotosView, DeletePhotoView,  # ✅ FIX: added DeletePhotoView
 )
 
+
 urlpatterns = [
-    # ── Customers ────────────────────────────────────────────────────
-    # GET  ?loan_type=vehicle|gold   filter by type
-    # GET  ?q=search                 search by name/phone/vehicle
-    path('customers/',              CustomerListCreateView.as_view(), name='customer-list'),
-    path('customers/<int:pk>/',     CustomerDetailView.as_view(),     name='customer-detail'),
+    # ── Customers ─────────────────────────────────────────────────────
+    path('customers/',          CustomerListCreateView.as_view(), name='customer-list'),
+    path('customers/<int:pk>/', CustomerDetailView.as_view(),     name='customer-detail'),
 
     # ── Gold Items ────────────────────────────────────────────────────
     path('customers/<int:customer_id>/gold-items/', GoldItemListCreateView.as_view(), name='gold-item-list'),
@@ -28,9 +28,24 @@ urlpatterns = [
     # ── Statement ─────────────────────────────────────────────────────
     path('loans/<int:loan_id>/statement/', StatementView.as_view(), name='statement'),
 
-    # ── Dashboard  (?loan_type=vehicle|gold|all) ──────────────────────
-    path('dashboard/',  DashboardView.as_view(),  name='dashboard'),
+    # ── Dashboard ─────────────────────────────────────────────────────
+    path('dashboard/', DashboardView.as_view(), name='dashboard'),
 
     # ── Reminders ─────────────────────────────────────────────────────
     path('reminders/', RemindersView.as_view(), name='reminders'),
+
+    # ── Photos ────────────────────────────────────────────────────────
+    # GET  — list all photos for a customer (returns list with id + photoUrl)
+    path('customers/<int:customer_id>/photos/',
+         GetPhotosView.as_view(), name='get-photos'),
+
+    # POST — upload a new photo (multipart: photo_type + photo file)
+    path('customers/<int:customer_id>/photos/upload/',
+         UploadPhotoView.as_view(), name='upload-photo'),
+
+    # ✅ NEW: DELETE — remove a single photo by its DB id
+    #         Flutter's delete button uses PhotoService.deletePhoto(photoId)
+    #         which calls DELETE /customers/<id>/photos/<photo_id>/
+    path('customers/<int:customer_id>/photos/<int:photo_id>/',
+         DeletePhotoView.as_view(), name='delete-photo'),
 ]

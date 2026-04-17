@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta, date, datetime
-from .models import Customer, Loan, EmiPayment, GoldItem
+from .models import Customer, Loan, EmiPayment, GoldItem, LoanPhoto
 from .serializers import (
     CustomerListSerializer, CustomerDetailSerializer,
     CustomerCreateSerializer, LoanSerializer,
@@ -12,6 +12,14 @@ from .serializers import (
     GoldItemSerializer, GoldItemCreateSerializer,
 )
 from .utils import generate_emi_schedule, regenerate_unpaid_schedule
+from django.conf import settings
+from supabase import create_client
+from .supabase_client import supabase
+
+ALLOWED_PHOTO_TYPES = {
+    'vehicle': ['customer', 'vehicle', 'rc_book'],
+    'gold':    ['customer', 'gold_items'],
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -75,10 +83,6 @@ class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
 # ═══════════════════════════════════════════════════════════════════════
 
 class GoldItemListCreateView(generics.ListCreateAPIView):
-    """
-    GET  /customers/<customer_id>/gold-items/  → list items
-    POST /customers/<customer_id>/gold-items/  → add item
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
@@ -107,9 +111,6 @@ class GoldItemListCreateView(generics.ListCreateAPIView):
 
 
 class GoldItemDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    GET / PUT / PATCH / DELETE  /gold-items/<pk>/
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
@@ -214,10 +215,6 @@ class RecordPaymentView(APIView):
 
 # ═══════════════════════════════════════════════════════════════════════
 #  DASHBOARD VIEW
-#  Query params:
-#    ?loan_type=vehicle|gold|all   (default: all)
-#    ?mode=daily|weekly|monthly    (default: monthly)
-#    ?days=N                       (custom day range)
 # ═══════════════════════════════════════════════════════════════════════
 
 class DashboardView(APIView):
@@ -266,7 +263,6 @@ class DashboardView(APIView):
             overdue_qs = overdue_qs.filter(loan__customer__loan_type=loan_type_filter)
         overdue_count = overdue_qs.count()
 
-        # ── Time range ───────────────────────────────────────────────
         mode       = request.query_params.get('mode', 'monthly')
         days_param = request.query_params.get('days', None)
 
@@ -298,7 +294,7 @@ class DashboardView(APIView):
                 loan_date__lte=period['end'],
             )
             if loan_type_filter in ('vehicle', 'gold'):
-                paid_emis_qs  = paid_emis_qs.filter(loan__customer__loan_type=loan_type_filter)
+                paid_emis_qs   = paid_emis_qs.filter(loan__customer__loan_type=loan_type_filter)
                 loans_given_qs = loans_given_qs.filter(customer__loan_type=loan_type_filter)
 
             result.append({
@@ -496,3 +492,147 @@ class StatementView(APIView):
             },
             'emi_schedule': schedule,
         })
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  PHOTO VIEWS
+# ═══════════════════════════════════════════════════════════════════════
+
+class UploadPhotoView(APIView):
+    """
+    POST /customers/<customer_id>/photos/upload/
+    Form fields: photo_type (str), photo (file)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, customer_id):
+        try:
+            customer = Customer.objects.get(
+                id=customer_id, vendor=request.user
+            )
+        except Customer.DoesNotExist:
+            return Response({'error': 'Customer not found'}, status=404)
+
+        photo_type = request.data.get('photo_type', '').strip()
+        file       = request.FILES.get('photo')
+
+        if not photo_type or not file:
+            return Response({'error': 'photo_type and photo are required'}, status=400)
+
+        allowed = ALLOWED_PHOTO_TYPES.get(customer.loan_type, [])
+        if photo_type not in allowed:
+            return Response(
+                {'error': f"Invalid photo_type for {customer.loan_type} loan. Allowed: {allowed}"},
+                status=400,
+            )
+
+        ext          = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else 'jpg'
+        storage_path = f"{customer.loan_type}-loans/{customer.id}/{photo_type}.{ext}"
+
+        try:
+            supabase.storage.from_('loan-media').upload(
+                path=storage_path,
+                file=file.read(),
+                file_options={
+                    'content-type': file.content_type or 'image/jpeg',
+                    'upsert': 'true',
+                },
+            )
+            public_url = supabase.storage.from_('loan-media').get_public_url(storage_path)
+
+        except Exception as e:
+            return Response({'error': f'Storage upload failed: {str(e)}'}, status=500)
+
+        photo, _ = LoanPhoto.objects.update_or_create(
+            customer=customer,
+            photo_type=photo_type,
+            defaults={'photo_url': public_url},
+        )
+
+        return Response({
+            'id':         photo.id,
+            'photo_type': photo_type,
+            'photoUrl':   public_url,
+        }, status=status.HTTP_201_CREATED)
+
+
+class GetPhotosView(APIView):
+    """
+    GET /customers/<customer_id>/photos/
+
+    ✅ FIX: Returns a LIST of photo objects so Flutter's PhotoService can
+    read each photo's 'id' (for deletion) and 'photoUrl' (for display).
+
+    Response shape:
+    [
+      { "id": 1, "photoUrl": "https://...", "photo_type": "customer" },
+      { "id": 2, "photoUrl": "https://...", "photo_type": "vehicle"  },
+      ...
+    ]
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, customer_id):
+        # ✅ FIX: Scope to the logged-in vendor so no other vendor can
+        #         read another vendor's customer photos.
+        try:
+            customer = Customer.objects.get(
+                id=customer_id, vendor=request.user
+            )
+        except Customer.DoesNotExist:
+            return Response({'error': 'Customer not found'}, status=404)
+
+        photos = LoanPhoto.objects.filter(customer=customer)
+
+        # ✅ FIX: Return as a list with 'id' and 'photoUrl' fields so
+        #         Flutter's _PhotoViewSectionState can render + delete them.
+        photo_list = [
+            {
+                'id':         p.id,
+                'photoUrl':   p.photo_url,
+                'photo_type': p.photo_type,
+                'uploaded_at': p.uploaded_at.isoformat(),
+            }
+            for p in photos
+        ]
+
+        return Response(photo_list)
+
+
+class DeletePhotoView(APIView):
+    """
+    DELETE /customers/<customer_id>/photos/<photo_id>/
+
+    ✅ NEW: Flutter's delete button calls PhotoService.deletePhoto(photoId).
+           Add this view + URL so the delete button actually works.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, customer_id, photo_id):
+        try:
+            photo = LoanPhoto.objects.get(
+                id=photo_id,
+                customer__id=customer_id,
+                customer__vendor=request.user,   # vendor-scoped for security
+            )
+        except LoanPhoto.DoesNotExist:
+            return Response({'error': 'Photo not found'}, status=404)
+
+        # ── Also delete from Supabase storage ────────────────────────
+        try:
+            # Extract the storage path from the public URL
+            # URL pattern: https://<project>.supabase.co/storage/v1/object/public/loan-media/<path>
+            url      = photo.photo_url
+            marker   = '/loan-media/'
+            if marker in url:
+                storage_path = url.split(marker, 1)[1]
+                # Strip any query string (e.g. ?t=timestamp added by Supabase)
+                storage_path = storage_path.split('?')[0]
+                supabase.storage.from_('loan-media').remove([storage_path])
+        except Exception:
+            # Don't fail the request if Supabase delete fails —
+            # the DB record is the source of truth for Flutter.
+            pass
+
+        photo.delete()
+        return Response({'deleted': photo_id}, status=status.HTTP_200_OK)
