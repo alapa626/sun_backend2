@@ -2,21 +2,22 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ============================================================
-# SECRET KEY
+# SECRET KEY & DEBUG
 # ============================================================
-SECRET_KEY = 'django-insecure-your-secret-key-change-this-in-production'  # Change this!
-
+SECRET_KEY = 'django-insecure-your-secret-key-change-this-in-production'
 DEBUG = True  # Set to False in production
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']  # Restrict in production
 
+# ============================================================
+# INSTALLED APPS
+# ============================================================
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -62,15 +63,15 @@ TEMPLATES = [
 WSGI_APPLICATION = 'sun_backend.wsgi.application'
 
 # ============================================================
-# DATABASE — Supabase PostgreSQL (CORRECTED)
+# DATABASE — Supabase PostgreSQL
 # ============================================================
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'postgres',
-        'USER': 'postgres.xnolhapukkdwcxyoczhn',  # Updated user format
-        'PASSWORD': 'Ajay@!!)!@%',  # Replace with your actual password
-        'HOST': 'aws-1-ap-southeast-1.pooler.supabase.com',  # Updated host (pooler endpoint)
+        'USER': 'postgres.xnolhapukkdwcxyoczhn',
+        'PASSWORD': 'Ajay@!!)!@%',
+        'HOST': 'aws-1-ap-southeast-1.pooler.supabase.com',
         'PORT': '5432',
         'OPTIONS': {
             'sslmode': 'require',
@@ -100,14 +101,22 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # ============================================================
-# MEDIA STORAGE — Supabase Storage
+# SUPABASE CONFIGURATION
 # ============================================================
-SUPABASE_URL = 'https://xnolhapukkdwcxyoczhn.supabase.co'  # Updated
-SUPABASE_SERVICE_KEY = 'YOUR_SUPABASE_SERVICE_KEY_HERE'  # Replace with your actual key
-SUPABASE_STORAGE_BUCKET = 'media'
+SUPABASE_URL = 'https://xnolhapukkdwcxyoczhn.supabase.co'
+SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY', 'your-anon-key-here')
+SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhub2xoYXB1a2tkd2N4eW9jemhuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTQ2MTIwMiwiZXhwIjoyMDkxMDM3MjAyfQ.O7wKDJzjO4zEA6fGCGoMRLy-kcdRcCacvkVpSxdRvRw'
 
-DEFAULT_FILE_STORAGE = 'sun_backend.storage_backends.SupabaseStorage'
+# ============================================================
+# SUPABASE STORAGE CONFIGURATION
+# ============================================================
+# Make sure you create a bucket named 'loan-media' in Supabase Dashboard
+# Path: Storage > Buckets > Create New > loan-media
+SUPABASE_STORAGE_BUCKET = 'loan-media'
+
+# Media files served from Supabase
 MEDIA_URL = f'{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/'
+MEDIA_ROOT = BASE_DIR / 'media'
 
 # ============================================================
 # REST FRAMEWORK
@@ -139,6 +148,6 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:8000',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = False  # Restrict in production
+CORS_ALLOW_ALL_ORIGINS = False
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB

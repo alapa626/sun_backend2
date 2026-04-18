@@ -526,21 +526,25 @@ class UploadPhotoView(APIView):
                 status=400,
             )
 
+        # Get bucket name from settings
+        bucket_name = settings.SUPABASE_STORAGE_BUCKET
+        
         ext          = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else 'jpg'
         storage_path = f"{customer.loan_type}-loans/{customer.id}/{photo_type}.{ext}"
 
         try:
-            supabase.storage.from_('loan-media').upload(
+            supabase.storage.from_(bucket_name).upload(
                 path=storage_path,
                 file=file.read(),
                 file_options={
                     'content-type': file.content_type or 'image/jpeg',
-                    'upsert': 'true',
+                    'upsert': True,
                 },
             )
-            public_url = supabase.storage.from_('loan-media').get_public_url(storage_path)
+            public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
 
         except Exception as e:
+            print(f"Storage upload error: {str(e)}")
             return Response({'error': f'Storage upload failed: {str(e)}'}, status=500)
 
         photo, _ = LoanPhoto.objects.update_or_create(
@@ -560,7 +564,7 @@ class GetPhotosView(APIView):
     """
     GET /customers/<customer_id>/photos/
 
-    ✅ FIX: Returns a LIST of photo objects so Flutter's PhotoService can
+    Returns a LIST of photo objects so Flutter's PhotoService can
     read each photo's 'id' (for deletion) and 'photoUrl' (for display).
 
     Response shape:
@@ -573,8 +577,7 @@ class GetPhotosView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, customer_id):
-        # ✅ FIX: Scope to the logged-in vendor so no other vendor can
-        #         read another vendor's customer photos.
+        # Scope to the logged-in vendor so no other vendor can read another vendor's customer photos
         try:
             customer = Customer.objects.get(
                 id=customer_id, vendor=request.user
@@ -584,8 +587,7 @@ class GetPhotosView(APIView):
 
         photos = LoanPhoto.objects.filter(customer=customer)
 
-        # ✅ FIX: Return as a list with 'id' and 'photoUrl' fields so
-        #         Flutter's _PhotoViewSectionState can render + delete them.
+        # Return as a list with 'id' and 'photoUrl' fields
         photo_list = [
             {
                 'id':         p.id,
@@ -603,8 +605,7 @@ class DeletePhotoView(APIView):
     """
     DELETE /customers/<customer_id>/photos/<photo_id>/
 
-    ✅ NEW: Flutter's delete button calls PhotoService.deletePhoto(photoId).
-           Add this view + URL so the delete button actually works.
+    Flutter's delete button calls PhotoService.deletePhoto(photoId).
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -618,20 +619,23 @@ class DeletePhotoView(APIView):
         except LoanPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=404)
 
-        # ── Also delete from Supabase storage ────────────────────────
+        # Also delete from Supabase storage
+        bucket_name = settings.SUPABASE_STORAGE_BUCKET
+        
         try:
             # Extract the storage path from the public URL
-            # URL pattern: https://<project>.supabase.co/storage/v1/object/public/loan-media/<path>
+            # URL pattern: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
             url      = photo.photo_url
-            marker   = '/loan-media/'
+            marker   = f'/{bucket_name}/'
             if marker in url:
                 storage_path = url.split(marker, 1)[1]
                 # Strip any query string (e.g. ?t=timestamp added by Supabase)
                 storage_path = storage_path.split('?')[0]
-                supabase.storage.from_('loan-media').remove([storage_path])
-        except Exception:
+                supabase.storage.from_(bucket_name).remove([storage_path])
+        except Exception as e:
             # Don't fail the request if Supabase delete fails —
             # the DB record is the source of truth for Flutter.
+            print(f"Error deleting from Supabase: {str(e)}")
             pass
 
         photo.delete()
