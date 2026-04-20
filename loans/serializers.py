@@ -105,7 +105,7 @@ class CustomerListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = [
-            'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar',
+            'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar', 'pan_card',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
             'total_gold_weight', 'gold_items_count',
             'active_loans_count', 'total_loan_amount', 'created_at',
@@ -141,7 +141,7 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = [
-            'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar',
+            'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar', 'pan_card',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
             'gold_items', 'total_gold_weight', 'total_gold_value',
             'loans', 'created_at',
@@ -200,7 +200,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         model = Customer
         fields = [
             'id', 'loan_type',
-            'name', 'phone', 'address', 'aadhaar',
+            'name', 'phone', 'address', 'aadhaar', 'pan_card',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
             'gold_items',
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',

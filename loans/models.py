@@ -61,6 +61,7 @@ class Customer(models.Model):
     phone   = models.CharField(max_length=20)
     address = models.TextField()
     aadhaar = models.CharField(max_length=20, blank=True)
+    pan_card = models.CharField(max_length=10, blank=True)
 
     # Vehicle (blank for gold loans)
     vehicle_type   = models.CharField(max_length=20, choices=VEHICLE_TYPE_CHOICES, blank=True)
