@@ -15,6 +15,7 @@ from .utils import generate_emi_schedule, regenerate_unpaid_schedule
 from django.conf import settings
 from supabase import create_client
 from .supabase_client import supabase
+import uuid
 
 ALLOWED_PHOTO_TYPES = {
     'vehicle': ['customer', 'vehicle', 'rc_book'],
@@ -502,6 +503,13 @@ class UploadPhotoView(APIView):
     """
     POST /customers/<customer_id>/photos/upload/
     Form fields: photo_type (str), photo (file)
+
+    FIX: 'upsert' must be the string 'true', not the Python bool True.
+         The Supabase Python client forwards file_options directly as HTTP
+         headers — HTTP headers must be str or bytes, never bool.
+
+    FIX: storage_path now includes a uuid so multiple photos of the same
+         type (e.g. two 'customer' photos) don't overwrite each other.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -517,20 +525,29 @@ class UploadPhotoView(APIView):
         file       = request.FILES.get('photo')
 
         if not photo_type or not file:
-            return Response({'error': 'photo_type and photo are required'}, status=400)
+            return Response(
+                {'error': 'photo_type and photo are required'},
+                status=400,
+            )
 
         allowed = ALLOWED_PHOTO_TYPES.get(customer.loan_type, [])
         if photo_type not in allowed:
             return Response(
-                {'error': f"Invalid photo_type for {customer.loan_type} loan. Allowed: {allowed}"},
+                {'error': f"Invalid photo_type for {customer.loan_type} loan. "
+                          f"Allowed: {allowed}"},
                 status=400,
             )
 
-        # Get bucket name from settings
-        bucket_name = settings.SUPABASE_STORAGE_BUCKET
-        
+        bucket_name  = settings.SUPABASE_STORAGE_BUCKET
         ext          = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else 'jpg'
-        storage_path = f"{customer.loan_type}-loans/{customer.id}/{photo_type}.{ext}"
+
+        # ── FIX: add a uuid so multiple uploads of the same type don't
+        #         overwrite each other in Supabase storage ──────────────
+        unique_id    = uuid.uuid4().hex[:8]
+        storage_path = (
+            f"{customer.loan_type}-loans/{customer.id}/"
+            f"{photo_type}_{unique_id}.{ext}"
+        )
 
         try:
             supabase.storage.from_(bucket_name).upload(
@@ -538,26 +555,40 @@ class UploadPhotoView(APIView):
                 file=file.read(),
                 file_options={
                     'content-type': file.content_type or 'image/jpeg',
-                    'upsert': True,
+                    # ── FIX: must be the string 'true', NOT the Python bool True ──
+                    # The Supabase client passes file_options as raw HTTP headers.
+                    # HTTP headers only accept str or bytes — bool causes:
+                    #   "Header value must be str or bytes, not <class 'bool'>"
+                    'upsert': 'true',   # ← was: True  (bool) → crash
                 },
             )
-            public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
+            public_url = supabase.storage.from_(bucket_name).get_public_url(
+                storage_path
+            )
 
         except Exception as e:
             print(f"Storage upload error: {str(e)}")
-            return Response({'error': f'Storage upload failed: {str(e)}'}, status=500)
+            return Response(
+                {'error': f'Storage upload failed: {str(e)}'},
+                status=500,
+            )
 
-        photo, _ = LoanPhoto.objects.update_or_create(
+        # Save to DB — use create() so multiple photos of same type are kept
+        photo = LoanPhoto.objects.create(
             customer=customer,
             photo_type=photo_type,
-            defaults={'photo_url': public_url},
+            photo_url=public_url,
         )
 
-        return Response({
-            'id':         photo.id,
-            'photo_type': photo_type,
-            'photoUrl':   public_url,
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                'id':         photo.id,
+                'photo_type': photo_type,
+                'photoUrl':   public_url,
+                'uploaded_at': photo.uploaded_at.isoformat(),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class GetPhotosView(APIView):
@@ -569,15 +600,13 @@ class GetPhotosView(APIView):
 
     Response shape:
     [
-      { "id": 1, "photoUrl": "https://...", "photo_type": "customer" },
-      { "id": 2, "photoUrl": "https://...", "photo_type": "vehicle"  },
+      { "id": 1, "photoUrl": "https://...", "photo_type": "customer", "uploaded_at": "..." },
       ...
     ]
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, customer_id):
-        # Scope to the logged-in vendor so no other vendor can read another vendor's customer photos
         try:
             customer = Customer.objects.get(
                 id=customer_id, vendor=request.user
@@ -585,27 +614,22 @@ class GetPhotosView(APIView):
         except Customer.DoesNotExist:
             return Response({'error': 'Customer not found'}, status=404)
 
-        photos = LoanPhoto.objects.filter(customer=customer)
+        photos = LoanPhoto.objects.filter(customer=customer).order_by('uploaded_at')
 
-        # Return as a list with 'id' and 'photoUrl' fields
-        photo_list = [
+        return Response([
             {
-                'id':         p.id,
-                'photoUrl':   p.photo_url,
-                'photo_type': p.photo_type,
+                'id':          p.id,
+                'photoUrl':    p.photo_url,
+                'photo_type':  p.photo_type,
                 'uploaded_at': p.uploaded_at.isoformat(),
             }
             for p in photos
-        ]
-
-        return Response(photo_list)
+        ])
 
 
 class DeletePhotoView(APIView):
     """
     DELETE /customers/<customer_id>/photos/<photo_id>/
-
-    Flutter's delete button calls PhotoService.deletePhoto(photoId).
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -614,29 +638,21 @@ class DeletePhotoView(APIView):
             photo = LoanPhoto.objects.get(
                 id=photo_id,
                 customer__id=customer_id,
-                customer__vendor=request.user,   # vendor-scoped for security
+                customer__vendor=request.user,
             )
         except LoanPhoto.DoesNotExist:
             return Response({'error': 'Photo not found'}, status=404)
 
-        # Also delete from Supabase storage
         bucket_name = settings.SUPABASE_STORAGE_BUCKET
-        
+
         try:
-            # Extract the storage path from the public URL
-            # URL pattern: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
-            url      = photo.photo_url
-            marker   = f'/{bucket_name}/'
+            url    = photo.photo_url
+            marker = f'/{bucket_name}/'
             if marker in url:
-                storage_path = url.split(marker, 1)[1]
-                # Strip any query string (e.g. ?t=timestamp added by Supabase)
-                storage_path = storage_path.split('?')[0]
+                storage_path = url.split(marker, 1)[1].split('?')[0]
                 supabase.storage.from_(bucket_name).remove([storage_path])
         except Exception as e:
-            # Don't fail the request if Supabase delete fails —
-            # the DB record is the source of truth for Flutter.
             print(f"Error deleting from Supabase: {str(e)}")
-            pass
 
         photo.delete()
         return Response({'deleted': photo_id}, status=status.HTTP_200_OK)
