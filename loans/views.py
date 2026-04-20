@@ -22,6 +22,9 @@ ALLOWED_PHOTO_TYPES = {
     'gold':    ['customer', 'gold_items'],
 }
 
+# ✅ Maximum photos allowed per photo_type per customer
+MAX_PHOTOS_PER_TYPE = 4
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CUSTOMER VIEWS
@@ -504,12 +507,8 @@ class UploadPhotoView(APIView):
     POST /customers/<customer_id>/photos/upload/
     Form fields: photo_type (str), photo (file)
 
-    FIX: 'upsert' must be the string 'true', not the Python bool True.
-         The Supabase Python client forwards file_options directly as HTTP
-         headers — HTTP headers must be str or bytes, never bool.
-
-    FIX: storage_path now includes a uuid so multiple photos of the same
-         type (e.g. two 'customer' photos) don't overwrite each other.
+    Allows up to MAX_PHOTOS_PER_TYPE (4) photos per photo_type per customer.
+    Each upload gets a unique UUID in the storage path so files never overwrite.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -538,11 +537,23 @@ class UploadPhotoView(APIView):
                 status=400,
             )
 
+        # ✅ Enforce max 4 photos per type per customer
+        existing_count = LoanPhoto.objects.filter(
+            customer=customer, photo_type=photo_type
+        ).count()
+        if existing_count >= MAX_PHOTOS_PER_TYPE:
+            return Response(
+                {
+                    'error': (
+                        f"Maximum {MAX_PHOTOS_PER_TYPE} photos allowed per type. "
+                        f"Please delete an existing '{photo_type}' photo before uploading a new one."
+                    )
+                },
+                status=400,
+            )
+
         bucket_name  = settings.SUPABASE_STORAGE_BUCKET
         ext          = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else 'jpg'
-
-        # ── FIX: add a uuid so multiple uploads of the same type don't
-        #         overwrite each other in Supabase storage ──────────────
         unique_id    = uuid.uuid4().hex[:8]
         storage_path = (
             f"{customer.loan_type}-loans/{customer.id}/"
@@ -555,11 +566,7 @@ class UploadPhotoView(APIView):
                 file=file.read(),
                 file_options={
                     'content-type': file.content_type or 'image/jpeg',
-                    # ── FIX: must be the string 'true', NOT the Python bool True ──
-                    # The Supabase client passes file_options as raw HTTP headers.
-                    # HTTP headers only accept str or bytes — bool causes:
-                    #   "Header value must be str or bytes, not <class 'bool'>"
-                    'upsert': 'true',   # ← was: True  (bool) → crash
+                    'upsert': 'true',
                 },
             )
             public_url = supabase.storage.from_(bucket_name).get_public_url(
@@ -573,7 +580,6 @@ class UploadPhotoView(APIView):
                 status=500,
             )
 
-        # Save to DB — use create() so multiple photos of same type are kept
         photo = LoanPhoto.objects.create(
             customer=customer,
             photo_type=photo_type,
@@ -582,10 +588,13 @@ class UploadPhotoView(APIView):
 
         return Response(
             {
-                'id':         photo.id,
-                'photo_type': photo_type,
-                'photoUrl':   public_url,
+                'id':          photo.id,
+                'photo_type':  photo_type,
+                'photoUrl':    public_url,
                 'uploaded_at': photo.uploaded_at.isoformat(),
+                # ✅ Also return how many of this type are now used
+                'count':       existing_count + 1,
+                'max':         MAX_PHOTOS_PER_TYPE,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -595,14 +604,19 @@ class GetPhotosView(APIView):
     """
     GET /customers/<customer_id>/photos/
 
-    Returns a LIST of photo objects so Flutter's PhotoService can
-    read each photo's 'id' (for deletion) and 'photoUrl' (for display).
+    Returns a list of all photo objects for the customer.
+    Each item includes 'id' (for deletion), 'photoUrl', 'photo_type',
+    'uploaded_at', and slot counts so Flutter can show how many slots remain.
 
     Response shape:
-    [
-      { "id": 1, "photoUrl": "https://...", "photo_type": "customer", "uploaded_at": "..." },
-      ...
-    ]
+    {
+      "photos": [
+        { "id": 1, "photoUrl": "https://...", "photo_type": "customer", "uploaded_at": "..." },
+        ...
+      ],
+      "counts": { "customer": 2, "vehicle": 1, "rc_book": 0 },
+      "max_per_type": 4
+    }
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -616,7 +630,7 @@ class GetPhotosView(APIView):
 
         photos = LoanPhoto.objects.filter(customer=customer).order_by('uploaded_at')
 
-        return Response([
+        photo_list = [
             {
                 'id':          p.id,
                 'photoUrl':    p.photo_url,
@@ -624,7 +638,20 @@ class GetPhotosView(APIView):
                 'uploaded_at': p.uploaded_at.isoformat(),
             }
             for p in photos
-        ])
+        ]
+
+        # ✅ Count per type so Flutter can show "2/4 used" badges
+        allowed_types = ALLOWED_PHOTO_TYPES.get(customer.loan_type, [])
+        counts = {
+            pt: sum(1 for p in photo_list if p['photo_type'] == pt)
+            for pt in allowed_types
+        }
+
+        return Response({
+            'photos':       photo_list,
+            'counts':       counts,
+            'max_per_type': MAX_PHOTOS_PER_TYPE,
+        })
 
 
 class DeletePhotoView(APIView):

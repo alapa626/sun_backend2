@@ -175,9 +175,6 @@ class EmiPayment(models.Model):
 
 # ═══════════════════════════════════════════════════════════════════════
 #  LOAN PHOTO
-#  ✅ FIX: All methods and Meta are now correctly indented inside the class
-#  ✅ FIX: Linked to Customer directly (no Loan FK needed for photo lookup)
-#  ✅ FIX: Added 'id' field explicitly so Flutter can use it for deletion
 # ═══════════════════════════════════════════════════════════════════════
 
 class LoanPhoto(models.Model):
@@ -188,14 +185,12 @@ class LoanPhoto(models.Model):
         Customer, on_delete=models.CASCADE, related_name='photos'
     )
     photo_type  = models.CharField(max_length=30)
-    # e.g. customer | vehicle | rc_book | gold_items
     photo_url   = models.URLField()
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
-    # ✅ FIX: Meta and __str__ are now properly inside the class
+    # ✅ unique_together REMOVED — multiple photos per type are now allowed
     class Meta:
-        unique_together = ('customer', 'photo_type')
-        # one slot per photo type per customer — re-upload just overwrites
+        ordering = ['uploaded_at']
 
     def __str__(self):
         return f"{self.customer.name} | {self.customer.loan_type} | {self.photo_type}"
