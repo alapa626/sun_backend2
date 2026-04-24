@@ -5,7 +5,8 @@ from .views import (
     LoanListCreateView, LoanDetailView,
     RecordPaymentView, DashboardView,
     RemindersView, StatementView,
-    UploadPhotoView, GetPhotosView, DeletePhotoView,  # ✅ FIX: added DeletePhotoView
+    LoanStatementPDFView,                          # ✅ NEW
+    UploadPhotoView, GetPhotosView, DeletePhotoView,
 )
 
 
@@ -25,8 +26,13 @@ urlpatterns = [
     # ── EMI Payment ───────────────────────────────────────────────────
     path('loans/<int:loan_id>/pay/<int:installment_number>/', RecordPaymentView.as_view(), name='record-payment'),
 
-    # ── Statement ─────────────────────────────────────────────────────
+    # ── Statement (JSON) ──────────────────────────────────────────────
     path('loans/<int:loan_id>/statement/', StatementView.as_view(), name='statement'),
+
+    # ── Statement (PDF) ✅ NEW ─────────────────────────────────────────
+    # GET  → returns PDF inline  (for WhatsApp / share sheet)
+    # GET ?download=true → forces file download
+    path('loans/<int:loan_id>/statement/pdf/', LoanStatementPDFView.as_view(), name='statement-pdf'),
 
     # ── Dashboard ─────────────────────────────────────────────────────
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
@@ -35,17 +41,10 @@ urlpatterns = [
     path('reminders/', RemindersView.as_view(), name='reminders'),
 
     # ── Photos ────────────────────────────────────────────────────────
-    # GET  — list all photos for a customer (returns list with id + photoUrl)
     path('customers/<int:customer_id>/photos/',
          GetPhotosView.as_view(), name='get-photos'),
-
-    # POST — upload a new photo (multipart: photo_type + photo file)
     path('customers/<int:customer_id>/photos/upload/',
          UploadPhotoView.as_view(), name='upload-photo'),
-
-    # ✅ NEW: DELETE — remove a single photo by its DB id
-    #         Flutter's delete button uses PhotoService.deletePhoto(photoId)
-    #         which calls DELETE /customers/<id>/photos/<photo_id>/
     path('customers/<int:customer_id>/photos/<int:photo_id>/',
          DeletePhotoView.as_view(), name='delete-photo'),
 ]
