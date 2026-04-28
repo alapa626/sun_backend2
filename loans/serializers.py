@@ -108,6 +108,10 @@ class CustomerListSerializer(serializers.ModelSerializer):
             'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar', 'pan_card',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
             'total_gold_weight', 'gold_items_count',
+            # ML fields
+            'ml_collateral_type', 'ml_collateral_description',
+            'ml_property_address', 'ml_survey_number',
+            'ml_collateral_value', 'ml_document_type',
             'active_loans_count', 'total_loan_amount', 'created_at',
         ]
 
@@ -144,6 +148,10 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar', 'pan_card',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
             'gold_items', 'total_gold_weight', 'total_gold_value',
+            # ML fields
+            'ml_collateral_type', 'ml_collateral_description',
+            'ml_property_address', 'ml_survey_number',
+            'ml_collateral_value', 'ml_document_type',
             'loans', 'created_at',
         ]
 
@@ -159,7 +167,7 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  CUSTOMER — CREATE  (vehicle + gold, single API call)
+#  CUSTOMER — CREATE  (vehicle + gold + ml, single API call)
 # ═══════════════════════════════════════════════════════════════════════
 
 class CustomerCreateSerializer(serializers.ModelSerializer):
@@ -201,8 +209,15 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'loan_type',
             'name', 'phone', 'address', 'aadhaar', 'pan_card',
+            # Vehicle fields
             'vehicle_type', 'vehicle_model', 'vehicle_number',
+            # Gold fields
             'gold_items',
+            # ML fields
+            'ml_collateral_type', 'ml_collateral_description',
+            'ml_property_address', 'ml_survey_number',
+            'ml_collateral_value', 'ml_document_type',
+            # Loan fields
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
             'fine_amount',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
@@ -228,6 +243,16 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError(
                         {'gold_items': 'Each gold item must have weight greater than 0.'}
                     )
+        elif loan_type == 'ml':
+            if not data.get('ml_collateral_type', '').strip():
+                raise serializers.ValidationError(
+                    {'ml_collateral_type': 'Collateral type is required for ML loans.'}
+                )
+            if float(data.get('ml_collateral_value', 0)) <= 0:
+                raise serializers.ValidationError(
+                    {'ml_collateral_value': 'Collateral value must be greater than 0 for ML loans.'}
+                )
+
         return data
 
     def create(self, validated_data):
@@ -245,7 +270,26 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         }
         gold_items_data = validated_data.pop('gold_items', [])
 
-        if validated_data.get('loan_type') == 'gold':
+        loan_type = validated_data.get('loan_type')
+
+        if loan_type == 'gold':
+            validated_data['vehicle_type'] = ''
+            validated_data['vehicle_model'] = ''
+            validated_data['vehicle_number'] = ''
+            validated_data.setdefault('ml_collateral_type', '')
+            validated_data.setdefault('ml_collateral_description', '')
+            validated_data.setdefault('ml_property_address', '')
+            validated_data.setdefault('ml_survey_number', '')
+            validated_data.setdefault('ml_collateral_value', 0)
+            validated_data.setdefault('ml_document_type', '')
+        elif loan_type == 'vehicle':
+            validated_data.setdefault('ml_collateral_type', '')
+            validated_data.setdefault('ml_collateral_description', '')
+            validated_data.setdefault('ml_property_address', '')
+            validated_data.setdefault('ml_survey_number', '')
+            validated_data.setdefault('ml_collateral_value', 0)
+            validated_data.setdefault('ml_document_type', '')
+        elif loan_type == 'ml':
             validated_data['vehicle_type'] = ''
             validated_data['vehicle_model'] = ''
             validated_data['vehicle_number'] = ''

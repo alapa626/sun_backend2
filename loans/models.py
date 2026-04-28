@@ -10,6 +10,7 @@ from django.utils import timezone
 LOAN_TYPE_CHOICES = [
     ('vehicle', 'Vehicle Loan'),
     ('gold', 'Gold Loan'),
+    ('ml', 'ML Loan'),
 ]
 
 VEHICLE_TYPE_CHOICES = [
@@ -41,6 +42,16 @@ GOLD_PURITY_CHOICES = [
     ('Other', 'Other'),
 ]
 
+ML_COLLATERAL_TYPE_CHOICES = [
+    ('Land', 'Land'),
+    ('Building', 'Building'),
+    ('Plot', 'Plot'),
+    ('Agricultural Land', 'Agricultural Land'),
+    ('Commercial Property', 'Commercial Property'),
+    ('Residential Property', 'Residential Property'),
+    ('Other', 'Other'),
+]
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CUSTOMER
@@ -63,10 +74,18 @@ class Customer(models.Model):
     aadhaar = models.CharField(max_length=20, blank=True)
     pan_card = models.CharField(max_length=10, blank=True)
 
-    # Vehicle (blank for gold loans)
+    # Vehicle (blank for gold/ml loans)
     vehicle_type   = models.CharField(max_length=20, choices=VEHICLE_TYPE_CHOICES, blank=True)
     vehicle_model  = models.CharField(max_length=100, blank=True)
     vehicle_number = models.CharField(max_length=30,  blank=True)
+
+    # ML Loan fields (blank for vehicle/gold loans)
+    ml_collateral_type        = models.CharField(max_length=50, choices=ML_COLLATERAL_TYPE_CHOICES, blank=True)
+    ml_collateral_description = models.TextField(blank=True)
+    ml_property_address       = models.TextField(blank=True)
+    ml_survey_number          = models.CharField(max_length=100, blank=True)
+    ml_collateral_value       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    ml_document_type          = models.CharField(max_length=100, blank=True)  # e.g. Patta, Sale Deed
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -181,6 +200,7 @@ class EmiPayment(models.Model):
 class LoanPhoto(models.Model):
     VEHICLE_PHOTO_TYPES = ['customer', 'vehicle', 'rc_book']
     GOLD_PHOTO_TYPES    = ['customer', 'gold_items']
+    ML_PHOTO_TYPES      = ['customer', 'property', 'documents']
 
     customer    = models.ForeignKey(
         Customer, on_delete=models.CASCADE, related_name='photos'

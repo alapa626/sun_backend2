@@ -33,6 +33,7 @@ from django.http import HttpResponse
 ALLOWED_PHOTO_TYPES = {
     'vehicle': ['customer', 'vehicle', 'rc_book'],
     'gold':    ['customer', 'gold_items'],
+    'ml':      ['customer', 'property', 'documents'],
 }
 
 MAX_PHOTOS_PER_TYPE = 4
@@ -48,6 +49,8 @@ _SECONDARY = colors.HexColor('#1e429f')
 _ACCENT    = colors.HexColor('#e1effe')
 _GOLD      = colors.HexColor('#b7791f')
 _GOLD_BG   = colors.HexColor('#fefce8')
+_ML_COLOR  = colors.HexColor('#065f46')   # deep green for ML loans
+_ML_BG     = colors.HexColor('#ecfdf5')
 _SUCCESS   = colors.HexColor('#057a55')
 _DANGER    = colors.HexColor('#c81e1e')
 _MUTED     = colors.HexColor('#6b7280')
@@ -152,6 +155,7 @@ def generate_loan_statement_pdf(loan) -> bytes:
     now      = timezone.now().date()
     customer = loan.customer
     is_gold  = customer.loan_type == 'gold'
+    is_ml    = customer.loan_type == 'ml'
 
     # ── Header ─────────────────────────────────────────────────────────
     hdr = Table(
@@ -175,9 +179,19 @@ def generate_loan_statement_pdf(loan) -> bytes:
     story.append(Spacer(1, 5 * mm))
 
     # ── Badges ─────────────────────────────────────────────────────────
-    badge_color = _GOLD if is_gold else _PRIMARY
-    badge_bg    = _GOLD_BG if is_gold else _ACCENT
-    badge_label = "GOLD LOAN" if is_gold else "VEHICLE LOAN"
+    if is_gold:
+        badge_color = _GOLD
+        badge_bg    = _GOLD_BG
+        badge_label = "GOLD LOAN"
+    elif is_ml:
+        badge_color = _ML_COLOR
+        badge_bg    = _ML_BG
+        badge_label = "ML LOAN"
+    else:
+        badge_color = _PRIMARY
+        badge_bg    = _ACCENT
+        badge_label = "VEHICLE LOAN"
+
     status_color = _DANGER if loan.is_active else _SUCCESS
     status_label = "ACTIVE"  if loan.is_active else "CLOSED"
 
@@ -233,8 +247,8 @@ def generate_loan_statement_pdf(loan) -> bytes:
     story.append(_info_table(cust_rows, avail))
     story.append(Spacer(1, 3 * mm))
 
-    # ── Vehicle or Gold details ────────────────────────────────────────
-    if not is_gold:
+    # ── Vehicle / Gold / ML details ────────────────────────────────────
+    if not is_gold and not is_ml:
         if customer.vehicle_model or customer.vehicle_number:
             story.append(Paragraph("Vehicle Details", s['section']))
             veh_rows = []
@@ -243,7 +257,8 @@ def generate_loan_statement_pdf(loan) -> bytes:
             if customer.vehicle_number: veh_rows.append(("Number", customer.vehicle_number))
             story.append(_info_table(veh_rows, avail))
             story.append(Spacer(1, 3 * mm))
-    else:
+
+    elif is_gold:
         gold_items = list(customer.gold_items.all())
         if gold_items:
             story.append(Paragraph("Gold Items", s['section']))
@@ -289,6 +304,25 @@ def generate_loan_statement_pdf(loan) -> bytes:
             ]))
             story.append(gi_tbl)
             story.append(Spacer(1, 3 * mm))
+
+    elif is_ml:
+        story.append(Paragraph("Mortgage / Property Details", s['section']))
+        ml_rows = []
+        if customer.ml_collateral_type:
+            ml_rows.append(("Collateral Type", customer.ml_collateral_type))
+        if customer.ml_property_address:
+            ml_rows.append(("Property Address", customer.ml_property_address))
+        if customer.ml_survey_number:
+            ml_rows.append(("Survey Number", customer.ml_survey_number))
+        if customer.ml_document_type:
+            ml_rows.append(("Document Type", customer.ml_document_type))
+        if float(customer.ml_collateral_value) > 0:
+            ml_rows.append(("Property Value", _fmt_inr(customer.ml_collateral_value)))
+        if customer.ml_collateral_description:
+            ml_rows.append(("Description", customer.ml_collateral_description))
+        if ml_rows:
+            story.append(_info_table(ml_rows, avail))
+        story.append(Spacer(1, 3 * mm))
 
     # ── Loan details ───────────────────────────────────────────────────
     story.append(Paragraph("Loan Details", s['section']))
@@ -411,9 +445,11 @@ class CustomerListCreateView(generics.ListCreateAPIView):
                 Q(name__icontains=q) |
                 Q(phone__icontains=q) |
                 Q(vehicle_model__icontains=q) |
-                Q(vehicle_number__icontains=q)
+                Q(vehicle_number__icontains=q) |
+                Q(ml_collateral_type__icontains=q) |
+                Q(ml_survey_number__icontains=q)
             )
-        if loan_type in ('vehicle', 'gold'):
+        if loan_type in ('vehicle', 'gold', 'ml'):
             qs = qs.filter(loan_type=loan_type)
 
         return qs
@@ -597,7 +633,7 @@ class DashboardView(APIView):
             customer__vendor=request.user
         ).prefetch_related('emi_payments')
 
-        if loan_type_filter in ('vehicle', 'gold'):
+        if loan_type_filter in ('vehicle', 'gold', 'ml'):
             customers_qs = customers_qs.filter(loan_type=loan_type_filter)
             loans_qs     = loans_qs.filter(customer__loan_type=loan_type_filter)
 
@@ -614,11 +650,14 @@ class DashboardView(APIView):
         total_gold_weight = sum(float(item.weight_grams) for c in gold_customers for item in c.gold_items.all())
         total_gold_value  = sum(float(item.estimated_value) for c in gold_customers for item in c.gold_items.all())
 
+        ml_customers       = Customer.objects.filter(vendor=request.user, loan_type='ml')
+        total_ml_collateral_value = sum(float(c.ml_collateral_value) for c in ml_customers)
+
         now        = timezone.now().date()
         overdue_qs = EmiPayment.objects.filter(
             loan__customer__vendor=request.user, is_paid=False, due_date__lt=now,
         )
-        if loan_type_filter in ('vehicle', 'gold'):
+        if loan_type_filter in ('vehicle', 'gold', 'ml'):
             overdue_qs = overdue_qs.filter(loan__customer__loan_type=loan_type_filter)
         overdue_count = overdue_qs.count()
 
@@ -652,7 +691,7 @@ class DashboardView(APIView):
                 loan_date__gte=period['start'],
                 loan_date__lte=period['end'],
             )
-            if loan_type_filter in ('vehicle', 'gold'):
+            if loan_type_filter in ('vehicle', 'gold', 'ml'):
                 paid_emis_qs   = paid_emis_qs.filter(loan__customer__loan_type=loan_type_filter)
                 loans_given_qs = loans_given_qs.filter(customer__loan_type=loan_type_filter)
 
@@ -666,19 +705,21 @@ class DashboardView(APIView):
             })
 
         return Response({
-            'total_customers':         customers_qs.count(),
-            'vehicle_customers':       Customer.objects.filter(vendor=request.user, loan_type='vehicle').count(),
-            'gold_customers':          gold_customers.count(),
-            'total_lent':              round(total_lent, 2),
-            'total_payable':           round(total_payable, 2),
-            'total_collected':         round(total_collected, 2),
-            'total_pending':           round(total_pending, 2),
-            'active_loans':            active_count,
-            'closed_loans':            closed_count,
-            'overdue_emis':            overdue_count,
-            'total_gold_weight_grams': round(total_gold_weight, 3),
-            'total_gold_value':        round(total_gold_value, 2),
-            'monthly_collections':     result,
+            'total_customers':              customers_qs.count(),
+            'vehicle_customers':            Customer.objects.filter(vendor=request.user, loan_type='vehicle').count(),
+            'gold_customers':               gold_customers.count(),
+            'ml_customers':                 ml_customers.count(),
+            'total_lent':                   round(total_lent, 2),
+            'total_payable':                round(total_payable, 2),
+            'total_collected':              round(total_collected, 2),
+            'total_pending':                round(total_pending, 2),
+            'active_loans':                 active_count,
+            'closed_loans':                 closed_count,
+            'overdue_emis':                 overdue_count,
+            'total_gold_weight_grams':      round(total_gold_weight, 3),
+            'total_gold_value':             round(total_gold_value, 2),
+            'total_ml_collateral_value':    round(total_ml_collateral_value, 2),
+            'monthly_collections':          result,
         })
 
     def _build_monthly_periods(self, today, count):
@@ -743,12 +784,13 @@ class RemindersView(APIView):
                 'emi_amount':         float(emi.emi_amount),
                 'paid_amount':        float(emi.paid_amount),
                 'customer': {
-                    'id':             c.id,
-                    'name':           c.name,
-                    'phone':          c.phone,
-                    'loan_type':      c.loan_type,
-                    'vehicle_type':   c.vehicle_type,
-                    'vehicle_number': c.vehicle_number,
+                    'id':                  c.id,
+                    'name':                c.name,
+                    'phone':               c.phone,
+                    'loan_type':           c.loan_type,
+                    'vehicle_type':        c.vehicle_type,
+                    'vehicle_number':      c.vehicle_number,
+                    'ml_collateral_type':  c.ml_collateral_type,
                 },
                 'days_overdue': max(0, (now - emi.due_date).days) if emi.due_date < now else 0,
                 'days_left':    max(0, (emi.due_date - now).days) if emi.due_date >= now else 0,
@@ -806,6 +848,17 @@ class StatementView(APIView):
                 for item in customer.gold_items.all()
             ]
 
+        ml_details = {}
+        if customer.loan_type == 'ml':
+            ml_details = {
+                'collateral_type':        customer.ml_collateral_type,
+                'collateral_description': customer.ml_collateral_description,
+                'property_address':       customer.ml_property_address,
+                'survey_number':          customer.ml_survey_number,
+                'collateral_value':       float(customer.ml_collateral_value),
+                'document_type':          customer.ml_document_type,
+            }
+
         return Response({
             'generated_on': now,
             'vendor': {
@@ -825,6 +878,7 @@ class StatementView(APIView):
                 'gold_items':        gold_items,
                 'total_gold_weight': sum(i['weight_grams'] for i in gold_items),
                 'total_gold_value':  sum(i['estimated_value'] for i in gold_items),
+                'ml_details':        ml_details,
             },
             'loan': {
                 'id':            loan.id,
@@ -853,20 +907,10 @@ class StatementView(APIView):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  ✅ NEW — PDF STATEMENT VIEW
+#  PDF STATEMENT VIEW
 # ═══════════════════════════════════════════════════════════════════════
 
 class LoanStatementPDFView(APIView):
-    """
-    GET /loans/<loan_id>/statement/pdf/
-
-    Returns a styled PDF of the full loan statement.
-    Share directly via WhatsApp, SMS, or the system share sheet.
-
-    Query params:
-      ?download=true   →  Content-Disposition: attachment  (force download)
-      (default)        →  Content-Disposition: inline      (open in viewer)
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, loan_id):
