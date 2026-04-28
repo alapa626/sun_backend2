@@ -87,6 +87,20 @@ class Customer(models.Model):
     ml_collateral_value       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     ml_document_type          = models.CharField(max_length=100, blank=True)  # e.g. Patta, Sale Deed
 
+    # ── Proof / Documents Collected ───────────────────────────────────
+    # Owner types what proof/documents they collected from the customer.
+    # Vehicle loan  → e.g. "RC Book (Original), 2 Keys, Insurance Copy"
+    # Gold loan     → e.g. "Original Gold Bill, Purity Certificate, Photo ID"
+    # ML loan       → e.g. "Sale Deed, Patta, EC, Property Tax Receipt"
+    proof_description = models.TextField(
+        blank=True,
+        help_text=(
+            "Proof / documents collected from the customer. "
+            "e.g. RC Book, Keys (vehicle) | Gold bill, certificate (gold) | "
+            "Sale deed, Patta (ML)."
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

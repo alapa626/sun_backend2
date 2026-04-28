@@ -112,6 +112,8 @@ class CustomerListSerializer(serializers.ModelSerializer):
             'ml_collateral_type', 'ml_collateral_description',
             'ml_property_address', 'ml_survey_number',
             'ml_collateral_value', 'ml_document_type',
+            # Proof
+            'proof_description',
             'active_loans_count', 'total_loan_amount', 'created_at',
         ]
 
@@ -152,6 +154,8 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             'ml_collateral_type', 'ml_collateral_description',
             'ml_property_address', 'ml_survey_number',
             'ml_collateral_value', 'ml_document_type',
+            # Proof
+            'proof_description',
             'loans', 'created_at',
         ]
 
@@ -217,6 +221,8 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             'ml_collateral_type', 'ml_collateral_description',
             'ml_property_address', 'ml_survey_number',
             'ml_collateral_value', 'ml_document_type',
+            # Proof
+            'proof_description',
             # Loan fields
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
             'fine_amount',

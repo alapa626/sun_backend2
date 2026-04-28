@@ -58,6 +58,8 @@ _DARK      = colors.HexColor('#111827')
 _LIGHT     = colors.HexColor('#f9fafb')
 _BORDER    = colors.HexColor('#d1d5db')
 _WHITE     = colors.white
+_PROOF_COLOR = colors.HexColor('#7c3aed')   # purple for proof section
+_PROOF_BG    = colors.HexColor('#f5f3ff')
 
 
 def _pdf_styles():
@@ -72,6 +74,10 @@ def _pdf_styles():
         ),
         'section': ParagraphStyle(
             'section', fontSize=10, textColor=_PRIMARY,
+            fontName='Helvetica-Bold', spaceBefore=10, spaceAfter=4,
+        ),
+        'section_proof': ParagraphStyle(
+            'section_proof', fontSize=10, textColor=_PROOF_COLOR,
             fontName='Helvetica-Bold', spaceBefore=10, spaceAfter=4,
         ),
         'small': ParagraphStyle(
@@ -322,6 +328,35 @@ def generate_loan_statement_pdf(loan) -> bytes:
             ml_rows.append(("Description", customer.ml_collateral_description))
         if ml_rows:
             story.append(_info_table(ml_rows, avail))
+        story.append(Spacer(1, 3 * mm))
+
+    # ── Proof / Documents Collected ────────────────────────────────────
+    if customer.proof_description and customer.proof_description.strip():
+        story.append(Paragraph("Proof & Documents Collected", s['section_proof']))
+
+        proof_label = {
+            'vehicle': 'Documents / Proof Collected (Vehicle Loan)',
+            'gold':    'Documents / Proof Collected (Gold Loan)',
+            'ml':      'Documents / Proof Collected (ML Loan)',
+        }.get(customer.loan_type, 'Documents / Proof Collected')
+
+        proof_tbl = Table(
+            [[
+                _p(proof_label, size=8, color=_MUTED),
+                _p(customer.proof_description, size=8.5, bold=False),
+            ]],
+            colWidths=[avail * 0.38, avail * 0.62],
+        )
+        proof_tbl.setStyle(TableStyle([
+            ('BACKGROUND',    (0, 0), (-1, -1), _PROOF_BG),
+            ('GRID',          (0, 0), (-1, -1), 0.5, colors.HexColor('#ddd6fe')),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 8),
+            ('TOPPADDING',    (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
+        ]))
+        story.append(proof_tbl)
         story.append(Spacer(1, 3 * mm))
 
     # ── Loan details ───────────────────────────────────────────────────
@@ -879,6 +914,7 @@ class StatementView(APIView):
                 'total_gold_weight': sum(i['weight_grams'] for i in gold_items),
                 'total_gold_value':  sum(i['estimated_value'] for i in gold_items),
                 'ml_details':        ml_details,
+                'proof_description': customer.proof_description,
             },
             'loan': {
                 'id':            loan.id,
