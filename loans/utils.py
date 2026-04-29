@@ -1,3 +1,4 @@
+import calendar
 from datetime import date
 from .models import EmiPayment
 
@@ -14,7 +15,9 @@ def generate_emi_schedule(loan):
         month = start.month + i + 1
         year = start.year + (month - 1) // 12
         month = ((month - 1) % 12) + 1
-        due_date = date(year, month, start.day)
+        last_day = calendar.monthrange(year, month)[1]          # e.g. 28 for Feb
+        day = min(start.day, last_day)                          # clamp 29→28 for Feb
+        due_date = date(year, month, day)
 
         EmiPayment.objects.create(
             loan=loan,
@@ -51,7 +54,9 @@ def regenerate_unpaid_schedule(loan):
         month = start.month + i + 1
         year = start.year + (month - 1) // 12
         month = ((month - 1) % 12) + 1
-        due_date = date(year, month, start.day)
+        last_day = calendar.monthrange(year, month)[1]          # e.g. 28 for Feb
+        day = min(start.day, last_day)                          # clamp 29→28 for Feb
+        due_date = date(year, month, day)
 
         EmiPayment.objects.create(
             loan=loan,
