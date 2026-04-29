@@ -58,8 +58,9 @@ LEDGER_ENTRY_TYPE_CHOICES = [
 ]
 
 LEDGER_SOURCE_CHOICES = [
-    ('emi_payment', 'EMI Payment'),
-    ('manual',      'Manual Entry'),
+    ('emi_payment',       'EMI Payment'),
+    ('document_charge',   'Document Charge'),
+    ('manual',            'Manual Entry'),
 ]
 
 
@@ -78,10 +79,10 @@ class Customer(models.Model):
     )
 
     # Personal
-    name    = models.CharField(max_length=200)
-    phone   = models.CharField(max_length=20)
-    address = models.TextField()
-    aadhaar = models.CharField(max_length=20, blank=True)
+    name     = models.CharField(max_length=200)
+    phone    = models.CharField(max_length=20)
+    address  = models.TextField()
+    aadhaar  = models.CharField(max_length=20, blank=True)
     pan_card = models.CharField(max_length=10, blank=True)
 
     # Vehicle (blank for gold/ml loans)
@@ -97,7 +98,7 @@ class Customer(models.Model):
     ml_collateral_value       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     ml_document_type          = models.CharField(max_length=100, blank=True)
 
-    # ── Proof / Documents Collected ───────────────────────────────────
+    # Proof / Documents Collected
     proof_description = models.TextField(
         blank=True,
         help_text=(
@@ -121,9 +122,7 @@ class Customer(models.Model):
 # ═══════════════════════════════════════════════════════════════════════
 
 class GoldItem(models.Model):
-    customer = models.ForeignKey(
-        Customer, on_delete=models.CASCADE, related_name='gold_items'
-    )
+    customer         = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='gold_items')
     item_type        = models.CharField(max_length=20, choices=GOLD_ITEM_TYPE_CHOICES, default='Other')
     item_description = models.CharField(max_length=200, blank=True)
     weight_grams     = models.DecimalField(max_digits=8, decimal_places=3)
@@ -145,6 +144,17 @@ class Loan(models.Model):
     tenure_months = models.PositiveIntegerField(default=12)
     loan_date     = models.DateField(default=timezone.now)
     fine_amount   = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    # Document charge — deducted from disbursed amount, recorded as credit income
+    document_charge = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text=(
+            "One-time charge deducted before handing over cash. "
+            "Loan agreement is still for the full loan_amount. "
+            "Customer actually receives loan_amount − document_charge. "
+            "Automatically recorded as a credit entry in DailyLedger."
+        ),
+    )
 
     # Guarantor
     guarantor_name     = models.CharField(max_length=200, blank=True)
@@ -175,6 +185,11 @@ class Loan(models.Model):
         if self.tenure_months == 0:
             return 0
         return self.total_payable / self.tenure_months
+
+    @property
+    def net_disbursed(self):
+        """Actual cash handed to the customer after deducting document charge."""
+        return max(0, float(self.loan_amount) - float(self.document_charge))
 
     @property
     def total_paid(self):
@@ -225,9 +240,7 @@ class LoanPhoto(models.Model):
     GOLD_PHOTO_TYPES    = ['customer', 'gold_items']
     ML_PHOTO_TYPES      = ['customer', 'property', 'documents']
 
-    customer    = models.ForeignKey(
-        Customer, on_delete=models.CASCADE, related_name='photos'
-    )
+    customer    = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='photos')
     photo_type  = models.CharField(max_length=30)
     photo_url   = models.URLField()
     uploaded_at = models.DateTimeField(auto_now_add=True)
@@ -241,46 +254,25 @@ class LoanPhoto(models.Model):
 
 # ═══════════════════════════════════════════════════════════════════════
 #  DAILY LEDGER
-#  Tracks all credit (money received) and debit (money spent) entries.
-#  EMI payments auto-create a credit entry. Manual entries (expenses,
-#  other income) can be added freely. All entries are editable as notes.
 # ═══════════════════════════════════════════════════════════════════════
 
 class DailyLedger(models.Model):
-    vendor      = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name='ledger_entries'
-    )
-    entry_type  = models.CharField(
-        max_length=10, choices=LEDGER_ENTRY_TYPE_CHOICES
-    )
+    vendor      = models.ForeignKey(User, on_delete=models.CASCADE, related_name='ledger_entries')
+    entry_type  = models.CharField(max_length=10, choices=LEDGER_ENTRY_TYPE_CHOICES)
     amount      = models.DecimalField(max_digits=12, decimal_places=2)
-
-    # Free-text note — auto-populated for EMI payments, fully editable
     description = models.TextField(blank=True)
 
-    # ── Optional links (set for auto-generated EMI entries) ───────────
-    customer    = models.ForeignKey(
-        Customer, on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='ledger_entries'
-    )
-    loan        = models.ForeignKey(
-        Loan, on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='ledger_entries'
-    )
-    # OneToOne so each EmiPayment has at most one ledger entry
-    emi_payment = models.OneToOneField(
-        EmiPayment, on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='ledger_entry'
-    )
+    # Optional links
+    customer    = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name='ledger_entries')
+    loan        = models.ForeignKey(Loan, on_delete=models.SET_NULL, null=True, blank=True, related_name='ledger_entries')
+    emi_payment = models.OneToOneField(EmiPayment, on_delete=models.SET_NULL, null=True, blank=True, related_name='ledger_entry')
 
-    loan_type   = models.CharField(max_length=10, blank=True)   # vehicle / gold / ml
-    source      = models.CharField(
-        max_length=20, choices=LEDGER_SOURCE_CHOICES, default='manual'
-    )
+    loan_type  = models.CharField(max_length=10, blank=True)
+    source     = models.CharField(max_length=20, choices=LEDGER_SOURCE_CHOICES, default='manual')
 
-    entry_date  = models.DateField(default=timezone.now)
-    created_at  = models.DateTimeField(auto_now_add=True)
-    updated_at  = models.DateTimeField(auto_now=True)
+    entry_date = models.DateField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-entry_date', '-created_at']

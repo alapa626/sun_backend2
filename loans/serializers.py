@@ -58,23 +58,25 @@ class EmiPaymentSerializer(serializers.ModelSerializer):
 # ═══════════════════════════════════════════════════════════════════════
 
 class LoanSerializer(serializers.ModelSerializer):
-    emi_payments   = EmiPaymentSerializer(many=True, read_only=True)
-    total_interest = serializers.ReadOnlyField()
-    total_payable  = serializers.ReadOnlyField()
-    emi            = serializers.ReadOnlyField()
-    total_paid     = serializers.ReadOnlyField()
-    remaining      = serializers.ReadOnlyField()
-    is_active      = serializers.ReadOnlyField()
-    paid_count     = serializers.ReadOnlyField()
+    emi_payments    = EmiPaymentSerializer(many=True, read_only=True)
+    total_interest  = serializers.ReadOnlyField()
+    total_payable   = serializers.ReadOnlyField()
+    emi             = serializers.ReadOnlyField()
+    total_paid      = serializers.ReadOnlyField()
+    remaining       = serializers.ReadOnlyField()
+    is_active       = serializers.ReadOnlyField()
+    paid_count      = serializers.ReadOnlyField()
+    net_disbursed   = serializers.ReadOnlyField()
 
     class Meta:
         model = Loan
         fields = [
             'id', 'customer', 'loan_amount', 'interest_rate',
-            'tenure_months', 'loan_date', 'fine_amount',
+            'tenure_months', 'loan_date', 'fine_amount', 'document_charge',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
             'total_interest', 'total_payable', 'emi',
+            'net_disbursed',
             'total_paid', 'remaining', 'is_active', 'paid_count',
             'emi_payments', 'created_at',
         ]
@@ -86,7 +88,7 @@ class LoanCreateSerializer(serializers.ModelSerializer):
         model = Loan
         fields = [
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
-            'fine_amount',
+            'fine_amount', 'document_charge',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
         ]
@@ -171,11 +173,12 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
 # ═══════════════════════════════════════════════════════════════════════
 
 class CustomerCreateSerializer(serializers.ModelSerializer):
-    loan_amount   = serializers.DecimalField(max_digits=12, decimal_places=2, write_only=True)
-    interest_rate = serializers.DecimalField(max_digits=5, decimal_places=2, write_only=True, default=0)
-    tenure_months = serializers.IntegerField(write_only=True, default=12)
-    loan_date     = serializers.DateField(write_only=True, required=False)
-    fine_amount   = serializers.DecimalField(max_digits=10, decimal_places=2, write_only=True, default=0)
+    loan_amount      = serializers.DecimalField(max_digits=12, decimal_places=2, write_only=True)
+    interest_rate    = serializers.DecimalField(max_digits=5, decimal_places=2, write_only=True, default=0)
+    tenure_months    = serializers.IntegerField(write_only=True, default=12)
+    loan_date        = serializers.DateField(write_only=True, required=False)
+    fine_amount      = serializers.DecimalField(max_digits=10, decimal_places=2, write_only=True, default=0)
+    document_charge  = serializers.DecimalField(max_digits=10, decimal_places=2, write_only=True, default=0)
 
     guarantor_name     = serializers.CharField(write_only=True, required=False, allow_blank=True)
     guarantor_phone    = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -197,7 +200,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             'ml_collateral_value', 'ml_document_type',
             'proof_description',
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
-            'fine_amount',
+            'fine_amount', 'document_charge',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
         ]
@@ -229,6 +232,17 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {'ml_collateral_value': 'Collateral value must be greater than 0 for ML loans.'}
                 )
+
+        doc_charge = float(data.get('document_charge', 0))
+        loan_amount = float(data.get('loan_amount', 0))
+        if doc_charge < 0:
+            raise serializers.ValidationError(
+                {'document_charge': 'Document charge cannot be negative.'}
+            )
+        if doc_charge >= loan_amount:
+            raise serializers.ValidationError(
+                {'document_charge': 'Document charge must be less than loan amount.'}
+            )
         return data
 
     def create(self, validated_data):
@@ -238,6 +252,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             'tenure_months':      validated_data.pop('tenure_months', 12),
             'loan_date':          validated_data.pop('loan_date', timezone.now().date()),
             'fine_amount':        validated_data.pop('fine_amount', 0),
+            'document_charge':    validated_data.pop('document_charge', 0),
             'guarantor_name':     validated_data.pop('guarantor_name', ''),
             'guarantor_phone':    validated_data.pop('guarantor_phone', ''),
             'guarantor_address':  validated_data.pop('guarantor_address', ''),
@@ -248,8 +263,8 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         loan_type       = validated_data.get('loan_type')
 
         if loan_type == 'gold':
-            validated_data['vehicle_type'] = ''
-            validated_data['vehicle_model'] = ''
+            validated_data['vehicle_type']   = ''
+            validated_data['vehicle_model']  = ''
             validated_data['vehicle_number'] = ''
             validated_data.setdefault('ml_collateral_type', '')
             validated_data.setdefault('ml_collateral_description', '')
@@ -265,8 +280,8 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             validated_data.setdefault('ml_collateral_value', 0)
             validated_data.setdefault('ml_document_type', '')
         elif loan_type == 'ml':
-            validated_data['vehicle_type'] = ''
-            validated_data['vehicle_model'] = ''
+            validated_data['vehicle_type']   = ''
+            validated_data['vehicle_model']  = ''
             validated_data['vehicle_number'] = ''
 
         customer = Customer.objects.create(**validated_data)
@@ -277,6 +292,29 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         loan = Loan.objects.create(customer=customer, **loan_fields)
         generate_emi_schedule(loan)
 
+        # Auto-create credit ledger entry for document charge
+        if float(loan.document_charge) > 0:
+            from .models import DailyLedger
+            loan_label = {
+                'vehicle': f"Vehicle Loan ({customer.vehicle_type} {customer.vehicle_model})".strip(),
+                'gold':    'Gold Loan',
+                'ml':      f"ML Loan ({customer.ml_collateral_type})".strip(),
+            }.get(customer.loan_type, 'Loan')
+            DailyLedger.objects.create(
+                vendor=self.context['request'].user,
+                entry_type='credit',
+                amount=loan.document_charge,
+                description=(
+                    f"Document charge collected from {customer.name} "
+                    f"for {loan_label} — Loan #{loan.id}"
+                ),
+                customer=customer,
+                loan=loan,
+                loan_type=customer.loan_type,
+                source='document_charge',
+                entry_date=loan.loan_date,
+            )
+
         return customer
 
 
@@ -285,7 +323,6 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
 # ═══════════════════════════════════════════════════════════════════════
 
 class DailyLedgerSerializer(serializers.ModelSerializer):
-    """Full read serializer — includes customer snapshot fields."""
     customer_name  = serializers.SerializerMethodField()
     customer_phone = serializers.SerializerMethodField()
     loan_id        = serializers.SerializerMethodField()
@@ -295,11 +332,11 @@ class DailyLedgerSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'entry_type', 'amount', 'description',
             'loan_type', 'source', 'entry_date',
-            'customer',       # FK id (nullable)
-            'customer_name',  # snapshot
-            'customer_phone', # snapshot
-            'loan_id',        # FK id (nullable)
-            'emi_payment',    # FK id (nullable)
+            'customer',
+            'customer_name',
+            'customer_phone',
+            'loan_id',
+            'emi_payment',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'source', 'created_at', 'updated_at',
@@ -316,7 +353,6 @@ class DailyLedgerSerializer(serializers.ModelSerializer):
 
 
 class DailyLedgerCreateSerializer(serializers.ModelSerializer):
-    """Write serializer for manual entries. amount & entry_type required."""
     class Meta:
         model  = DailyLedger
         fields = [
@@ -332,7 +368,6 @@ class DailyLedgerCreateSerializer(serializers.ModelSerializer):
 
 
 class DailyLedgerUpdateSerializer(serializers.ModelSerializer):
-    """Partial update — only description, amount and entry_date are editable."""
     class Meta:
         model  = DailyLedger
         fields = ['description', 'amount', 'entry_date', 'entry_type']
