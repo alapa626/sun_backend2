@@ -1,15 +1,18 @@
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 from datetime import timedelta, date, datetime
-from .models import Customer, Loan, EmiPayment, GoldItem, LoanPhoto
+from .models import (
+    Customer, Loan, EmiPayment, GoldItem, LoanPhoto, DailyLedger
+)
 from .serializers import (
     CustomerListSerializer, CustomerDetailSerializer,
     CustomerCreateSerializer, LoanSerializer,
     LoanCreateSerializer, EmiPaymentSerializer,
     GoldItemSerializer, GoldItemCreateSerializer,
+    DailyLedgerSerializer, DailyLedgerCreateSerializer, DailyLedgerUpdateSerializer,
 )
 from .utils import generate_emi_schedule, regenerate_unpaid_schedule
 from django.conf import settings
@@ -43,13 +46,12 @@ MAX_PHOTOS_PER_TYPE = 4
 #  PDF GENERATION HELPERS
 # ═══════════════════════════════════════════════════════════════════════
 
-# Brand colours
 _PRIMARY   = colors.HexColor('#1a56db')
 _SECONDARY = colors.HexColor('#1e429f')
 _ACCENT    = colors.HexColor('#e1effe')
 _GOLD      = colors.HexColor('#b7791f')
 _GOLD_BG   = colors.HexColor('#fefce8')
-_ML_COLOR  = colors.HexColor('#065f46')   # deep green for ML loans
+_ML_COLOR  = colors.HexColor('#065f46')
 _ML_BG     = colors.HexColor('#ecfdf5')
 _SUCCESS   = colors.HexColor('#057a55')
 _DANGER    = colors.HexColor('#c81e1e')
@@ -58,7 +60,7 @@ _DARK      = colors.HexColor('#111827')
 _LIGHT     = colors.HexColor('#f9fafb')
 _BORDER    = colors.HexColor('#d1d5db')
 _WHITE     = colors.white
-_PROOF_COLOR = colors.HexColor('#7c3aed')   # purple for proof section
+_PROOF_COLOR = colors.HexColor('#7c3aed')
 _PROOF_BG    = colors.HexColor('#f5f3ff')
 
 
@@ -96,10 +98,8 @@ def _fmt_inr(val):
 
 
 def _p(text, size=8, bold=False, color=None, align=TA_LEFT):
-    """Quick Paragraph factory."""
     return Paragraph(text, ParagraphStyle(
-        '_p',
-        fontSize=size,
+        '_p', fontSize=size,
         fontName='Helvetica-Bold' if bold else 'Helvetica',
         textColor=color or _DARK,
         alignment=align,
@@ -127,12 +127,10 @@ def _info_table(rows, avail_width):
 
 
 def _amount_card(label, value, bg_color, text_color):
-    inner = Table(
-        [
-            [_p(label, size=7.5, color=_MUTED, align=TA_CENTER)],
-            [_p(value, size=9,   color=text_color, bold=True, align=TA_CENTER)],
-        ],
-    )
+    inner = Table([[
+        _p(label, size=7.5, color=_MUTED, align=TA_CENTER)],
+        [_p(value, size=9, color=text_color, bold=True, align=TA_CENTER)],
+    ])
     inner.setStyle(TableStyle([
         ('BACKGROUND',    (0, 0), (-1, -1), bg_color),
         ('TOPPADDING',    (0, 0), (-1, -1), 6),
@@ -163,17 +161,10 @@ def generate_loan_statement_pdf(loan) -> bytes:
     is_gold  = customer.loan_type == 'gold'
     is_ml    = customer.loan_type == 'ml'
 
-    # ── Header ─────────────────────────────────────────────────────────
-    hdr = Table(
-        [[
-            Paragraph("LOAN STATEMENT", s['title']),
-            Paragraph(
-                f"Loan #{loan.id} &nbsp;|&nbsp; {now.strftime('%d %b %Y')}",
-                s['subtitle'],
-            ),
-        ]],
-        colWidths=[avail],
-    )
+    hdr = Table([[
+        Paragraph("LOAN STATEMENT", s['title']),
+        Paragraph(f"Loan #{loan.id} &nbsp;|&nbsp; {now.strftime('%d %b %Y')}", s['subtitle']),
+    ]], colWidths=[avail])
     hdr.setStyle(TableStyle([
         ('BACKGROUND',    (0, 0), (-1, -1), _PRIMARY),
         ('TOPPADDING',    (0, 0), (-1, -1), 10),
@@ -184,33 +175,23 @@ def generate_loan_statement_pdf(loan) -> bytes:
     story.append(hdr)
     story.append(Spacer(1, 5 * mm))
 
-    # ── Badges ─────────────────────────────────────────────────────────
     if is_gold:
-        badge_color = _GOLD
-        badge_bg    = _GOLD_BG
-        badge_label = "GOLD LOAN"
+        badge_color = _GOLD;  badge_bg = _GOLD_BG;  badge_label = "GOLD LOAN"
     elif is_ml:
-        badge_color = _ML_COLOR
-        badge_bg    = _ML_BG
-        badge_label = "ML LOAN"
+        badge_color = _ML_COLOR; badge_bg = _ML_BG; badge_label = "ML LOAN"
     else:
-        badge_color = _PRIMARY
-        badge_bg    = _ACCENT
-        badge_label = "VEHICLE LOAN"
+        badge_color = _PRIMARY;  badge_bg = _ACCENT; badge_label = "VEHICLE LOAN"
 
     status_color = _DANGER if loan.is_active else _SUCCESS
-    status_label = "ACTIVE"  if loan.is_active else "CLOSED"
+    status_label = "ACTIVE" if loan.is_active else "CLOSED"
 
-    badges = Table(
-        [[
-            _p(badge_label, size=8, bold=True, color=badge_color, align=TA_CENTER),
-            _p(status_label, size=8, bold=True, color=status_color, align=TA_CENTER),
-        ]],
-        colWidths=[35 * mm, 30 * mm],
-    )
+    badges = Table([[
+        _p(badge_label,  size=8, bold=True, color=badge_color,  align=TA_CENTER),
+        _p(status_label, size=8, bold=True, color=status_color, align=TA_CENTER),
+    ]], colWidths=[35 * mm, 30 * mm])
     badges.setStyle(TableStyle([
-        ('BACKGROUND',    (0, 0), (0, 0), badge_bg),
-        ('BACKGROUND',    (1, 0), (1, 0),
+        ('BACKGROUND', (0, 0), (0, 0), badge_bg),
+        ('BACKGROUND', (1, 0), (1, 0),
          colors.HexColor('#f0fdf4') if not loan.is_active else colors.HexColor('#fef2f2')),
         ('GRID',          (0, 0), (-1, -1), 0.5, _BORDER),
         ('TOPPADDING',    (0, 0), (-1, -1), 4),
@@ -219,19 +200,14 @@ def generate_loan_statement_pdf(loan) -> bytes:
     story.append(badges)
     story.append(Spacer(1, 5 * mm))
 
-    # ── Summary cards ──────────────────────────────────────────────────
-    summary = Table(
-        [[
-            _amount_card("Loan Amount",   _fmt_inr(loan.loan_amount),   _ACCENT,  _PRIMARY),
-            _amount_card("Total Payable", _fmt_inr(loan.total_payable), _ACCENT,  _PRIMARY),
-            _amount_card("Total Paid",    _fmt_inr(loan.total_paid),
-                         colors.HexColor('#d1fae5'), _SUCCESS),
-            _amount_card("Remaining",     _fmt_inr(loan.remaining),
-                         colors.HexColor('#fee2e2') if loan.remaining > 0 else colors.HexColor('#d1fae5'),
-                         _DANGER if loan.remaining > 0 else _SUCCESS),
-        ]],
-        colWidths=[avail / 4] * 4,
-    )
+    summary = Table([[
+        _amount_card("Loan Amount",   _fmt_inr(loan.loan_amount),   _ACCENT, _PRIMARY),
+        _amount_card("Total Payable", _fmt_inr(loan.total_payable), _ACCENT, _PRIMARY),
+        _amount_card("Total Paid",    _fmt_inr(loan.total_paid),    colors.HexColor('#d1fae5'), _SUCCESS),
+        _amount_card("Remaining",     _fmt_inr(loan.remaining),
+                     colors.HexColor('#fee2e2') if loan.remaining > 0 else colors.HexColor('#d1fae5'),
+                     _DANGER if loan.remaining > 0 else _SUCCESS),
+    ]], colWidths=[avail / 4] * 4)
     summary.setStyle(TableStyle([
         ('LEFTPADDING',   (0, 0), (-1, -1), 3),
         ('RIGHTPADDING',  (0, 0), (-1, -1), 3),
@@ -241,19 +217,13 @@ def generate_loan_statement_pdf(loan) -> bytes:
     story.append(summary)
     story.append(Spacer(1, 5 * mm))
 
-    # ── Customer details ───────────────────────────────────────────────
     story.append(Paragraph("Customer Details", s['section']))
-    cust_rows = [
-        ("Name",    customer.name),
-        ("Phone",   customer.phone),
-        ("Address", customer.address),
-    ]
+    cust_rows = [("Name", customer.name), ("Phone", customer.phone), ("Address", customer.address)]
     if customer.aadhaar:  cust_rows.append(("Aadhaar", customer.aadhaar))
     if customer.pan_card: cust_rows.append(("PAN",     customer.pan_card))
     story.append(_info_table(cust_rows, avail))
     story.append(Spacer(1, 3 * mm))
 
-    # ── Vehicle / Gold / ML details ────────────────────────────────────
     if not is_gold and not is_ml:
         if customer.vehicle_model or customer.vehicle_number:
             story.append(Paragraph("Vehicle Details", s['section']))
@@ -263,7 +233,6 @@ def generate_loan_statement_pdf(loan) -> bytes:
             if customer.vehicle_number: veh_rows.append(("Number", customer.vehicle_number))
             story.append(_info_table(veh_rows, avail))
             story.append(Spacer(1, 3 * mm))
-
     elif is_gold:
         gold_items = list(customer.gold_items.all())
         if gold_items:
@@ -276,7 +245,7 @@ def generate_loan_statement_pdf(loan) -> bytes:
                 _p("Purity",      size=8, bold=True, color=_WHITE, align=TA_CENTER),
                 _p("Est. Value",  size=8, bold=True, color=_WHITE, align=TA_RIGHT),
             ]
-            gi_rows  = [gi_hdr]
+            gi_rows = [gi_hdr]
             total_wt = total_val = 0
             for idx, item in enumerate(gold_items, 1):
                 total_wt  += float(item.weight_grams)
@@ -289,13 +258,9 @@ def generate_loan_statement_pdf(loan) -> bytes:
                     _p(item.purity, size=8, align=TA_CENTER),
                     _p(_fmt_inr(item.estimated_value), size=8, align=TA_RIGHT),
                 ])
-            gi_rows.append([
-                '', '',
-                _p("Total", size=8, bold=True),
-                _p(f"{total_wt:.3f}", size=8, bold=True, align=TA_RIGHT),
-                '',
-                _p(_fmt_inr(total_val), size=8, bold=True, align=TA_RIGHT),
-            ])
+            gi_rows.append(['', '', _p("Total", size=8, bold=True),
+                            _p(f"{total_wt:.3f}", size=8, bold=True, align=TA_RIGHT),
+                            '', _p(_fmt_inr(total_val), size=8, bold=True, align=TA_RIGHT)])
             cw = avail / 6
             gi_tbl = Table(gi_rows, colWidths=[cw*0.4, cw*0.8, cw*1.4, cw*0.7, cw*0.7, cw*1.0])
             gi_tbl.setStyle(TableStyle([
@@ -310,18 +275,13 @@ def generate_loan_statement_pdf(loan) -> bytes:
             ]))
             story.append(gi_tbl)
             story.append(Spacer(1, 3 * mm))
-
     elif is_ml:
         story.append(Paragraph("Mortgage / Property Details", s['section']))
         ml_rows = []
-        if customer.ml_collateral_type:
-            ml_rows.append(("Collateral Type", customer.ml_collateral_type))
-        if customer.ml_property_address:
-            ml_rows.append(("Property Address", customer.ml_property_address))
-        if customer.ml_survey_number:
-            ml_rows.append(("Survey Number", customer.ml_survey_number))
-        if customer.ml_document_type:
-            ml_rows.append(("Document Type", customer.ml_document_type))
+        if customer.ml_collateral_type:  ml_rows.append(("Collateral Type",  customer.ml_collateral_type))
+        if customer.ml_property_address: ml_rows.append(("Property Address", customer.ml_property_address))
+        if customer.ml_survey_number:    ml_rows.append(("Survey Number",    customer.ml_survey_number))
+        if customer.ml_document_type:    ml_rows.append(("Document Type",    customer.ml_document_type))
         if float(customer.ml_collateral_value) > 0:
             ml_rows.append(("Property Value", _fmt_inr(customer.ml_collateral_value)))
         if customer.ml_collateral_description:
@@ -330,23 +290,17 @@ def generate_loan_statement_pdf(loan) -> bytes:
             story.append(_info_table(ml_rows, avail))
         story.append(Spacer(1, 3 * mm))
 
-    # ── Proof / Documents Collected ────────────────────────────────────
     if customer.proof_description and customer.proof_description.strip():
         story.append(Paragraph("Proof & Documents Collected", s['section_proof']))
-
         proof_label = {
             'vehicle': 'Documents / Proof Collected (Vehicle Loan)',
             'gold':    'Documents / Proof Collected (Gold Loan)',
             'ml':      'Documents / Proof Collected (ML Loan)',
         }.get(customer.loan_type, 'Documents / Proof Collected')
-
-        proof_tbl = Table(
-            [[
-                _p(proof_label, size=8, color=_MUTED),
-                _p(customer.proof_description, size=8.5, bold=False),
-            ]],
-            colWidths=[avail * 0.38, avail * 0.62],
-        )
+        proof_tbl = Table([[
+            _p(proof_label, size=8, color=_MUTED),
+            _p(customer.proof_description, size=8.5, bold=False),
+        ]], colWidths=[avail * 0.38, avail * 0.62])
         proof_tbl.setStyle(TableStyle([
             ('BACKGROUND',    (0, 0), (-1, -1), _PROOF_BG),
             ('GRID',          (0, 0), (-1, -1), 0.5, colors.HexColor('#ddd6fe')),
@@ -359,7 +313,6 @@ def generate_loan_statement_pdf(loan) -> bytes:
         story.append(proof_tbl)
         story.append(Spacer(1, 3 * mm))
 
-    # ── Loan details ───────────────────────────────────────────────────
     story.append(Paragraph("Loan Details", s['section']))
     loan_rows = [
         ("Loan Date",      loan.loan_date.strftime('%d %b %Y')),
@@ -378,7 +331,6 @@ def generate_loan_statement_pdf(loan) -> bytes:
     story.append(_info_table(loan_rows, avail))
     story.append(Spacer(1, 3 * mm))
 
-    # ── Guarantor ──────────────────────────────────────────────────────
     if loan.guarantor_name:
         story.append(Paragraph("Guarantor Details", s['section']))
         g_rows = [("Name", loan.guarantor_name)]
@@ -389,9 +341,7 @@ def generate_loan_statement_pdf(loan) -> bytes:
         story.append(_info_table(g_rows, avail))
         story.append(Spacer(1, 3 * mm))
 
-    # ── EMI Schedule ───────────────────────────────────────────────────
     story.append(Paragraph("EMI Payment Schedule", s['section']))
-
     emi_hdr = [
         _p("#",        size=8, bold=True, color=_WHITE, align=TA_CENTER),
         _p("Due Date", size=8, bold=True, color=_WHITE),
@@ -411,23 +361,17 @@ def generate_loan_statement_pdf(loan) -> bytes:
         ('LEFTPADDING',   (0, 0), (-1, -1), 4),
         ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
     ]
-
     for i, emi in enumerate(loan.emi_payments.all(), start=1):
         balance = max(0, float(emi.emi_amount) - float(emi.paid_amount))
         overdue = not emi.is_paid and emi.due_date < now
-
         if emi.is_paid:
-            status_txt   = "PAID"
-            status_color = _SUCCESS
+            status_txt   = "PAID";    status_color = _SUCCESS
             ts_cmds.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#f0fdf4')))
         elif overdue:
-            status_txt   = "OVERDUE"
-            status_color = _DANGER
+            status_txt   = "OVERDUE"; status_color = _DANGER
             ts_cmds.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fff7f7')))
         else:
-            status_txt   = "PENDING"
-            status_color = _MUTED
-
+            status_txt   = "PENDING"; status_color = _MUTED
         emi_rows.append([
             _p(str(emi.installment_number), size=8, align=TA_CENTER),
             _p(emi.due_date.strftime('%d %b %Y'), size=8),
@@ -437,18 +381,14 @@ def generate_loan_statement_pdf(loan) -> bytes:
             _p(emi.paid_date.strftime('%d %b %Y') if emi.paid_date else '-', size=8),
             _p(status_txt, size=7.5, bold=True, color=status_color, align=TA_CENTER),
         ])
-
     cw2 = avail / 7
-    emi_tbl = Table(
-        emi_rows,
+    emi_tbl = Table(emi_rows,
         colWidths=[cw2*0.5, cw2*1.2, cw2*1.1, cw2*1.1, cw2*1.0, cw2*1.2, cw2*0.9],
-        repeatRows=1,
-    )
+        repeatRows=1)
     emi_tbl.setStyle(TableStyle(ts_cmds))
     story.append(emi_tbl)
     story.append(Spacer(1, 6 * mm))
 
-    # ── Footer ─────────────────────────────────────────────────────────
     story.append(HRFlowable(width="100%", thickness=0.5, color=_BORDER))
     story.append(Spacer(1, 2 * mm))
     story.append(Paragraph(
@@ -471,22 +411,16 @@ class CustomerListCreateView(generics.ListCreateAPIView):
         qs = Customer.objects.filter(
             vendor=self.request.user
         ).prefetch_related('loans__emi_payments', 'gold_items')
-
         q         = self.request.query_params.get('q', '').strip()
         loan_type = self.request.query_params.get('loan_type', '').strip()
-
         if q:
             qs = qs.filter(
-                Q(name__icontains=q) |
-                Q(phone__icontains=q) |
-                Q(vehicle_model__icontains=q) |
-                Q(vehicle_number__icontains=q) |
-                Q(ml_collateral_type__icontains=q) |
-                Q(ml_survey_number__icontains=q)
+                Q(name__icontains=q) | Q(phone__icontains=q) |
+                Q(vehicle_model__icontains=q) | Q(vehicle_number__icontains=q) |
+                Q(ml_collateral_type__icontains=q) | Q(ml_survey_number__icontains=q)
             )
         if loan_type in ('vehicle', 'gold', 'ml'):
             qs = qs.filter(loan_type=loan_type)
-
         return qs
 
     def get_serializer_class(self):
@@ -498,10 +432,7 @@ class CustomerListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         customer = serializer.save(vendor=request.user)
-        return Response(
-            CustomerDetailSerializer(customer).data,
-            status=status.HTTP_201_CREATED,
-        )
+        return Response(CustomerDetailSerializer(customer).data, status=status.HTTP_201_CREATED)
 
 
 class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -537,13 +468,10 @@ class GoldItemListCreateView(generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         try:
             customer = Customer.objects.get(
-                id=self.kwargs.get('customer_id'),
-                vendor=request.user,
-                loan_type='gold',
+                id=self.kwargs.get('customer_id'), vendor=request.user, loan_type='gold',
             )
         except Customer.DoesNotExist:
             return Response({'error': 'Gold loan customer not found'}, status=404)
-
         serializer = GoldItemCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         item = serializer.save(customer=customer)
@@ -581,7 +509,6 @@ class LoanListCreateView(generics.ListCreateAPIView):
             )
         except Customer.DoesNotExist:
             return Response({'error': 'Customer not found'}, status=404)
-
         serializer = LoanCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         loan = serializer.save(customer=customer)
@@ -611,7 +538,7 @@ class LoanDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  EMI PAYMENT VIEW
+#  EMI PAYMENT VIEW  — auto-creates DailyLedger credit entry
 # ═══════════════════════════════════════════════════════════════════════
 
 class RecordPaymentView(APIView):
@@ -650,7 +577,269 @@ class RecordPaymentView(APIView):
             emi.paid_date = None
 
         emi.save()
+
+        # ── Auto-create / update / delete the ledger credit entry ─────
+        customer = loan.customer
+        self._sync_ledger_entry(
+            emi=emi,
+            loan=loan,
+            customer=customer,
+            vendor=request.user,
+            paid_amount=paid_amount,
+        )
+
         return Response(EmiPaymentSerializer(emi).data)
+
+    @staticmethod
+    def _sync_ledger_entry(emi, loan, customer, vendor, paid_amount):
+        """
+        Keep DailyLedger in sync whenever an EMI payment changes.
+        - paid_amount > 0  → upsert a credit entry
+        - paid_amount == 0 → delete any existing credit entry for this EMI
+        """
+        if paid_amount > 0:
+            # Build a meaningful auto description
+            loan_label = {
+                'vehicle': f"Vehicle Loan ({customer.vehicle_type} {customer.vehicle_model})".strip(),
+                'gold':    'Gold Loan',
+                'ml':      f"ML Loan ({customer.ml_collateral_type})".strip(),
+            }.get(customer.loan_type, 'Loan')
+
+            description = (
+                f"{customer.name} paid EMI #{emi.installment_number} "
+                f"for {loan_label} — Loan #{loan.id}"
+            )
+
+            DailyLedger.objects.update_or_create(
+                emi_payment=emi,
+                defaults={
+                    'vendor':      vendor,
+                    'entry_type':  'credit',
+                    'amount':      paid_amount,
+                    'description': description,
+                    'customer':    customer,
+                    'loan':        loan,
+                    'loan_type':   customer.loan_type,
+                    'source':      'emi_payment',
+                    'entry_date':  emi.paid_date or date.today(),
+                },
+            )
+        else:
+            # Payment reset to zero — remove ledger entry if it exists
+            DailyLedger.objects.filter(emi_payment=emi).delete()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  DAILY LEDGER VIEWS
+# ═══════════════════════════════════════════════════════════════════════
+
+def _parse_date_param(param: str) -> date | None:
+    """Parse a YYYY-MM-DD query param. Returns None on failure."""
+    if not param:
+        return None
+    try:
+        return datetime.strptime(param.strip(), '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+class DailyLedgerListCreateView(APIView):
+    """
+    GET  /api/loans/ledger/
+         ?date=YYYY-MM-DD            → single day  (default: today)
+         ?start=YYYY-MM-DD&end=...   → date range
+         ?entry_type=credit|debit    → filter by type
+
+    POST /api/loans/ledger/
+         { entry_type, amount, description, entry_date?,
+           loan_type?, customer?, loan? }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = DailyLedger.objects.filter(vendor=request.user)
+
+        start = _parse_date_param(request.query_params.get('start'))
+        end   = _parse_date_param(request.query_params.get('end'))
+        day   = _parse_date_param(request.query_params.get('date'))
+
+        if start and end:
+            qs = qs.filter(entry_date__gte=start, entry_date__lte=end)
+        elif start:
+            qs = qs.filter(entry_date__gte=start)
+        elif end:
+            qs = qs.filter(entry_date__lte=end)
+        elif day:
+            qs = qs.filter(entry_date=day)
+        else:
+            # Default: today
+            qs = qs.filter(entry_date=timezone.now().date())
+
+        entry_type = request.query_params.get('entry_type', '').strip()
+        if entry_type in ('credit', 'debit'):
+            qs = qs.filter(entry_type=entry_type)
+
+        serializer = DailyLedgerSerializer(
+            qs.select_related('customer', 'loan', 'emi_payment'),
+            many=True,
+        )
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = DailyLedgerCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        entry = serializer.save(
+            vendor=request.user,
+            source='manual',
+        )
+        return Response(DailyLedgerSerializer(entry).data, status=status.HTTP_201_CREATED)
+
+
+class DailyLedgerDetailView(APIView):
+    """
+    GET    /api/loans/ledger/<pk>/  → retrieve
+    PATCH  /api/loans/ledger/<pk>/  → update description / amount / date
+    DELETE /api/loans/ledger/<pk>/  → delete
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_entry(self, pk, vendor):
+        try:
+            return DailyLedger.objects.get(pk=pk, vendor=vendor)
+        except DailyLedger.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        entry = self._get_entry(pk, request.user)
+        if entry is None:
+            return Response({'error': 'Entry not found'}, status=404)
+        return Response(DailyLedgerSerializer(entry).data)
+
+    def patch(self, request, pk):
+        entry = self._get_entry(pk, request.user)
+        if entry is None:
+            return Response({'error': 'Entry not found'}, status=404)
+
+        serializer = DailyLedgerUpdateSerializer(entry, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        entry = serializer.save()
+        return Response(DailyLedgerSerializer(entry).data)
+
+    def delete(self, request, pk):
+        entry = self._get_entry(pk, request.user)
+        if entry is None:
+            return Response({'error': 'Entry not found'}, status=404)
+        entry.delete()
+        return Response({'deleted': pk}, status=status.HTTP_200_OK)
+
+
+class DailyLedgerSummaryView(APIView):
+    """
+    GET /api/loans/ledger/summary/
+        ?date=YYYY-MM-DD            → summary for that day  (default: today)
+        ?start=YYYY-MM-DD&end=...   → summary for date range
+
+    Returns totals broken down by credit / debit with entry counts.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = DailyLedger.objects.filter(vendor=request.user)
+
+        start = _parse_date_param(request.query_params.get('start'))
+        end   = _parse_date_param(request.query_params.get('end'))
+        day   = _parse_date_param(request.query_params.get('date'))
+
+        if start and end:
+            qs = qs.filter(entry_date__gte=start, entry_date__lte=end)
+        elif start:
+            qs = qs.filter(entry_date__gte=start)
+        elif end:
+            qs = qs.filter(entry_date__lte=end)
+        elif day:
+            qs = qs.filter(entry_date=day)
+        else:
+            qs = qs.filter(entry_date=timezone.now().date())
+
+        total_credit = float(qs.filter(entry_type='credit').aggregate(t=Sum('amount'))['t'] or 0)
+        total_debit  = float(qs.filter(entry_type='debit').aggregate(t=Sum('amount'))['t'] or 0)
+        credit_count = qs.filter(entry_type='credit').count()
+        debit_count  = qs.filter(entry_type='debit').count()
+
+        # Credit breakdown by source
+        emi_credit = float(
+            qs.filter(entry_type='credit', source='emi_payment').aggregate(t=Sum('amount'))['t'] or 0
+        )
+        manual_credit = float(
+            qs.filter(entry_type='credit', source='manual').aggregate(t=Sum('amount'))['t'] or 0
+        )
+
+        return Response({
+            'total_credit':   round(total_credit, 2),
+            'total_debit':    round(total_debit, 2),
+            'net':            round(total_credit - total_debit, 2),
+            'credit_count':   credit_count,
+            'debit_count':    debit_count,
+            'emi_credit':     round(emi_credit, 2),
+            'manual_credit':  round(manual_credit, 2),
+        })
+
+
+class PendingDuesView(APIView):
+    """
+    GET /api/loans/ledger/pending-dues/
+        ?date=YYYY-MM-DD   → unpaid EMIs due on or before this date (default: today)
+
+    Returns customers with pending/overdue EMIs — useful for the ledger
+    "what should come in today" section.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        cutoff = _parse_date_param(request.query_params.get('date')) or timezone.now().date()
+
+        overdue_emis = (
+            EmiPayment.objects
+            .filter(
+                loan__customer__vendor=request.user,
+                is_paid=False,
+                due_date__lte=cutoff,
+            )
+            .select_related('loan__customer')
+            .order_by('due_date')
+        )
+
+        results = []
+        for emi in overdue_emis:
+            c = emi.loan.customer
+            results.append({
+                'emi_id':             emi.id,
+                'loan_id':            emi.loan.id,
+                'installment_number': emi.installment_number,
+                'due_date':           emi.due_date,
+                'emi_amount':         float(emi.emi_amount),
+                'paid_amount':        float(emi.paid_amount),
+                'balance':            max(0, float(emi.emi_amount) - float(emi.paid_amount)),
+                'days_overdue':       (cutoff - emi.due_date).days,
+                'customer': {
+                    'id':           c.id,
+                    'name':         c.name,
+                    'phone':        c.phone,
+                    'loan_type':    c.loan_type,
+                    'vehicle_type': c.vehicle_type,
+                    'vehicle_number': c.vehicle_number,
+                    'ml_collateral_type': c.ml_collateral_type,
+                },
+            })
+
+        total_pending = sum(r['balance'] for r in results)
+
+        return Response({
+            'date':            cutoff,
+            'total_pending':   round(total_pending, 2),
+            'pending_count':   len(results),
+            'pending_dues':    results,
+        })
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -685,7 +874,7 @@ class DashboardView(APIView):
         total_gold_weight = sum(float(item.weight_grams) for c in gold_customers for item in c.gold_items.all())
         total_gold_value  = sum(float(item.estimated_value) for c in gold_customers for item in c.gold_items.all())
 
-        ml_customers       = Customer.objects.filter(vendor=request.user, loan_type='ml')
+        ml_customers              = Customer.objects.filter(vendor=request.user, loan_type='ml')
         total_ml_collateral_value = sum(float(c.ml_collateral_value) for c in ml_customers)
 
         now        = timezone.now().date()
@@ -705,11 +894,9 @@ class DashboardView(APIView):
             periods = self._build_day_periods(now, 7)
         elif days_param:
             days    = int(days_param)
-            periods = (
-                self._build_day_periods(now, days)
-                if days <= 31
-                else self._build_week_periods(now, days)
-            )
+            periods = (self._build_day_periods(now, days)
+                       if days <= 31
+                       else self._build_week_periods(now, days))
         else:
             periods = self._build_monthly_periods(now, 6)
 
@@ -740,21 +927,21 @@ class DashboardView(APIView):
             })
 
         return Response({
-            'total_customers':              customers_qs.count(),
-            'vehicle_customers':            Customer.objects.filter(vendor=request.user, loan_type='vehicle').count(),
-            'gold_customers':               gold_customers.count(),
-            'ml_customers':                 ml_customers.count(),
-            'total_lent':                   round(total_lent, 2),
-            'total_payable':                round(total_payable, 2),
-            'total_collected':              round(total_collected, 2),
-            'total_pending':                round(total_pending, 2),
-            'active_loans':                 active_count,
-            'closed_loans':                 closed_count,
-            'overdue_emis':                 overdue_count,
-            'total_gold_weight_grams':      round(total_gold_weight, 3),
-            'total_gold_value':             round(total_gold_value, 2),
-            'total_ml_collateral_value':    round(total_ml_collateral_value, 2),
-            'monthly_collections':          result,
+            'total_customers':           customers_qs.count(),
+            'vehicle_customers':         Customer.objects.filter(vendor=request.user, loan_type='vehicle').count(),
+            'gold_customers':            gold_customers.count(),
+            'ml_customers':              ml_customers.count(),
+            'total_lent':                round(total_lent, 2),
+            'total_payable':             round(total_payable, 2),
+            'total_collected':           round(total_collected, 2),
+            'total_pending':             round(total_pending, 2),
+            'active_loans':              active_count,
+            'closed_loans':              closed_count,
+            'overdue_emis':              overdue_count,
+            'total_gold_weight_grams':   round(total_gold_weight, 3),
+            'total_gold_value':          round(total_gold_value, 2),
+            'total_ml_collateral_value': round(total_ml_collateral_value, 2),
+            'monthly_collections':       result,
         })
 
     def _build_monthly_periods(self, today, count):
@@ -765,11 +952,8 @@ class DashboardView(APIView):
             while m <= 0:
                 m += 12; y -= 1
             first = date(y, m, 1)
-            last  = (
-                date(y + 1, 1, 1) - timedelta(days=1)
-                if m == 12
-                else date(y, m + 1, 1) - timedelta(days=1)
-            )
+            last  = (date(y + 1, 1, 1) - timedelta(days=1)
+                     if m == 12 else date(y, m + 1, 1) - timedelta(days=1))
             periods.append({'label': first.strftime('%b'), 'start': first, 'end': min(last, today)})
         return periods
 
@@ -805,8 +989,7 @@ class RemindersView(APIView):
         upcoming_end = now + timedelta(days=3)
 
         base_qs = EmiPayment.objects.filter(
-            loan__customer__vendor=request.user,
-            is_paid=False,
+            loan__customer__vendor=request.user, is_paid=False,
         ).select_related('loan__customer')
 
         def fmt(emi):
@@ -819,13 +1002,13 @@ class RemindersView(APIView):
                 'emi_amount':         float(emi.emi_amount),
                 'paid_amount':        float(emi.paid_amount),
                 'customer': {
-                    'id':                  c.id,
-                    'name':                c.name,
-                    'phone':               c.phone,
-                    'loan_type':           c.loan_type,
-                    'vehicle_type':        c.vehicle_type,
-                    'vehicle_number':      c.vehicle_number,
-                    'ml_collateral_type':  c.ml_collateral_type,
+                    'id':                 c.id,
+                    'name':               c.name,
+                    'phone':              c.phone,
+                    'loan_type':          c.loan_type,
+                    'vehicle_type':       c.vehicle_type,
+                    'vehicle_number':     c.vehicle_number,
+                    'ml_collateral_type': c.ml_collateral_type,
                 },
                 'days_overdue': max(0, (now - emi.due_date).days) if emi.due_date < now else 0,
                 'days_left':    max(0, (emi.due_date - now).days) if emi.due_date >= now else 0,
@@ -839,7 +1022,7 @@ class RemindersView(APIView):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  STATEMENT VIEW  (JSON — existing)
+#  STATEMENT VIEW (JSON)
 # ═══════════════════════════════════════════════════════════════════════
 
 class StatementView(APIView):
@@ -957,8 +1140,7 @@ class LoanStatementPDFView(APIView):
         except Loan.DoesNotExist:
             return Response({'error': 'Loan not found'}, status=404)
 
-        pdf_bytes = generate_loan_statement_pdf(loan)
-
+        pdf_bytes     = generate_loan_statement_pdf(loan)
         customer_name = loan.customer.name.replace(' ', '_')
         filename      = f"Loan_{loan.id}_{customer_name}_Statement.pdf"
         disposition   = 'attachment' if request.query_params.get('download') else 'inline'
@@ -1008,9 +1190,7 @@ class UploadPhotoView(APIView):
         bucket_name  = settings.SUPABASE_STORAGE_BUCKET
         ext          = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else 'jpg'
         unique_id    = uuid.uuid4().hex[:8]
-        storage_path = (
-            f"{customer.loan_type}-loans/{customer.id}/{photo_type}_{unique_id}.{ext}"
-        )
+        storage_path = f"{customer.loan_type}-loans/{customer.id}/{photo_type}_{unique_id}.{ext}"
 
         try:
             supabase.storage.from_(bucket_name).upload(
@@ -1048,7 +1228,6 @@ class GetPhotosView(APIView):
             return Response({'error': 'Customer not found'}, status=404)
 
         photos = LoanPhoto.objects.filter(customer=customer).order_by('uploaded_at')
-
         photo_list = [
             {
                 'id':          p.id,
@@ -1058,18 +1237,10 @@ class GetPhotosView(APIView):
             }
             for p in photos
         ]
-
         allowed_types = ALLOWED_PHOTO_TYPES.get(customer.loan_type, [])
-        counts        = {
-            pt: sum(1 for p in photo_list if p['photo_type'] == pt)
-            for pt in allowed_types
-        }
+        counts = {pt: sum(1 for p in photo_list if p['photo_type'] == pt) for pt in allowed_types}
 
-        return Response({
-            'photos':       photo_list,
-            'counts':       counts,
-            'max_per_type': MAX_PHOTOS_PER_TYPE,
-        })
+        return Response({'photos': photo_list, 'counts': counts, 'max_per_type': MAX_PHOTOS_PER_TYPE})
 
 
 class DeletePhotoView(APIView):

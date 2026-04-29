@@ -52,6 +52,16 @@ ML_COLLATERAL_TYPE_CHOICES = [
     ('Other', 'Other'),
 ]
 
+LEDGER_ENTRY_TYPE_CHOICES = [
+    ('credit', 'Credit'),
+    ('debit', 'Debit'),
+]
+
+LEDGER_SOURCE_CHOICES = [
+    ('emi_payment', 'EMI Payment'),
+    ('manual',      'Manual Entry'),
+]
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CUSTOMER
@@ -85,13 +95,9 @@ class Customer(models.Model):
     ml_property_address       = models.TextField(blank=True)
     ml_survey_number          = models.CharField(max_length=100, blank=True)
     ml_collateral_value       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    ml_document_type          = models.CharField(max_length=100, blank=True)  # e.g. Patta, Sale Deed
+    ml_document_type          = models.CharField(max_length=100, blank=True)
 
     # ── Proof / Documents Collected ───────────────────────────────────
-    # Owner types what proof/documents they collected from the customer.
-    # Vehicle loan  → e.g. "RC Book (Original), 2 Keys, Insurance Copy"
-    # Gold loan     → e.g. "Original Gold Bill, Purity Certificate, Photo ID"
-    # ML loan       → e.g. "Sale Deed, Patta, EC, Property Tax Receipt"
     proof_description = models.TextField(
         blank=True,
         help_text=(
@@ -152,10 +158,13 @@ class Loan(models.Model):
     class Meta:
         ordering = ['-created_at']
 
-    # Computed properties
+    @property
+    def monthly_interest(self):
+        return float(self.loan_amount) * (float(self.interest_rate) / 100)
+
     @property
     def total_interest(self):
-        return float(self.loan_amount) * (float(self.interest_rate) / 100) * (self.tenure_months / 12)
+        return self.monthly_interest * self.tenure_months
 
     @property
     def total_payable(self):
@@ -223,9 +232,61 @@ class LoanPhoto(models.Model):
     photo_url   = models.URLField()
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
-    # ✅ unique_together REMOVED — multiple photos per type are now allowed
     class Meta:
         ordering = ['uploaded_at']
 
     def __str__(self):
         return f"{self.customer.name} | {self.customer.loan_type} | {self.photo_type}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  DAILY LEDGER
+#  Tracks all credit (money received) and debit (money spent) entries.
+#  EMI payments auto-create a credit entry. Manual entries (expenses,
+#  other income) can be added freely. All entries are editable as notes.
+# ═══════════════════════════════════════════════════════════════════════
+
+class DailyLedger(models.Model):
+    vendor      = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='ledger_entries'
+    )
+    entry_type  = models.CharField(
+        max_length=10, choices=LEDGER_ENTRY_TYPE_CHOICES
+    )
+    amount      = models.DecimalField(max_digits=12, decimal_places=2)
+
+    # Free-text note — auto-populated for EMI payments, fully editable
+    description = models.TextField(blank=True)
+
+    # ── Optional links (set for auto-generated EMI entries) ───────────
+    customer    = models.ForeignKey(
+        Customer, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='ledger_entries'
+    )
+    loan        = models.ForeignKey(
+        Loan, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='ledger_entries'
+    )
+    # OneToOne so each EmiPayment has at most one ledger entry
+    emi_payment = models.OneToOneField(
+        EmiPayment, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='ledger_entry'
+    )
+
+    loan_type   = models.CharField(max_length=10, blank=True)   # vehicle / gold / ml
+    source      = models.CharField(
+        max_length=20, choices=LEDGER_SOURCE_CHOICES, default='manual'
+    )
+
+    entry_date  = models.DateField(default=timezone.now)
+    created_at  = models.DateTimeField(auto_now_add=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-entry_date', '-created_at']
+
+    def __str__(self):
+        return (
+            f"[{self.entry_type.upper()}] ₹{self.amount} "
+            f"on {self.entry_date} — {self.description[:40]}"
+        )

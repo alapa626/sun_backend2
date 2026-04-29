@@ -7,22 +7,12 @@ from .views import (
     RemindersView, StatementView,
     LoanStatementPDFView,
     UploadPhotoView, GetPhotosView, DeletePhotoView,
+    # ── Daily Ledger ──────────────────────────────────────────────────
+    DailyLedgerListCreateView,
+    DailyLedgerDetailView,
+    DailyLedgerSummaryView,
+    PendingDuesView,
 )
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  ROOT MOUNT POINT (in your project-level urls.py):
-#
-#    path('api/loans/', include('loans.urls'))
-#
-#  That means every path() below is relative to /api/loans/.
-#
-#  ✅  CORRECT  →  /api/loans/<id>/statement/pdf/
-#  ❌  WRONG    →  /api/loans/loans/<id>/statement/pdf/  (double "loans")
-#
-#  The old version had  path("loans/<int:loan_id>/statement/pdf/", ...)
-#  which produced the double-"loans" URL that the Flutter app couldn't find.
-#  Fixed by removing the leading  "loans/"  from the route string.
-# ─────────────────────────────────────────────────────────────────────────────
 
 urlpatterns = [
     # ── Customers ─────────────────────────────────────────────────────
@@ -44,15 +34,6 @@ urlpatterns = [
     path('loans/<int:loan_id>/statement/', StatementView.as_view(), name='statement'),
 
     # ── Statement PDF ─────────────────────────────────────────────────
-    # ✅ FIXED: route is  loans/<id>/statement/pdf/  (relative to /api/loans/)
-    #           full URL = /api/loans/loans/<id>/statement/pdf/
-    #
-    #   Flutter _pdfCandidates() tries this as candidate #1:
-    #     '$_base$_api/loans/$loanId/statement/pdf/'
-    #     = https://…/api/loans/loans/<id>/statement/pdf/   ← matches ✓
-    #
-    # GET         → returns PDF inline  (Content-Disposition: inline)
-    # GET ?download=1 → forces browser/share-sheet download
     path('loans/<int:loan_id>/statement/pdf/', LoanStatementPDFView.as_view(), name='statement-pdf'),
 
     # ── Dashboard ─────────────────────────────────────────────────────
@@ -68,4 +49,20 @@ urlpatterns = [
          UploadPhotoView.as_view(), name='upload-photo'),
     path('customers/<int:customer_id>/photos/<int:photo_id>/',
          DeletePhotoView.as_view(), name='delete-photo'),
+
+    # ── Daily Ledger ──────────────────────────────────────────────────
+    # GET  /api/loans/ledger/?date=2025-01-15          → entries for that date
+    # GET  /api/loans/ledger/?start=2025-01-01&end=... → date range
+    # GET  /api/loans/ledger/?entry_type=credit        → filter by type
+    # POST /api/loans/ledger/                          → create manual entry
+    path('ledger/',          DailyLedgerListCreateView.as_view(), name='ledger-list'),
+    path('ledger/<int:pk>/', DailyLedgerDetailView.as_view(),     name='ledger-detail'),
+
+    # GET  /api/loans/ledger/summary/?date=2025-01-15  → totals for that date
+    # GET  /api/loans/ledger/summary/?start=...&end=... → range totals
+    path('ledger/summary/',  DailyLedgerSummaryView.as_view(),    name='ledger-summary'),
+
+    # GET  /api/loans/ledger/pending-dues/?date=2025-01-15
+    # Returns customers with unpaid EMIs due on/before given date
+    path('ledger/pending-dues/', PendingDuesView.as_view(),       name='pending-dues'),
 ]

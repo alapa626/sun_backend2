@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Customer, Loan, EmiPayment, GoldItem
+from .models import Customer, Loan, EmiPayment, GoldItem, DailyLedger
 from .utils import generate_emi_schedule
 
 
@@ -31,7 +31,7 @@ class GoldItemCreateSerializer(serializers.ModelSerializer):
 # ═══════════════════════════════════════════════════════════════════════
 
 class EmiPaymentSerializer(serializers.ModelSerializer):
-    balance = serializers.SerializerMethodField()
+    balance    = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
 
     class Meta:
@@ -58,14 +58,14 @@ class EmiPaymentSerializer(serializers.ModelSerializer):
 # ═══════════════════════════════════════════════════════════════════════
 
 class LoanSerializer(serializers.ModelSerializer):
-    emi_payments = EmiPaymentSerializer(many=True, read_only=True)
+    emi_payments   = EmiPaymentSerializer(many=True, read_only=True)
     total_interest = serializers.ReadOnlyField()
-    total_payable = serializers.ReadOnlyField()
-    emi = serializers.ReadOnlyField()
-    total_paid = serializers.ReadOnlyField()
-    remaining = serializers.ReadOnlyField()
-    is_active = serializers.ReadOnlyField()
-    paid_count = serializers.ReadOnlyField()
+    total_payable  = serializers.ReadOnlyField()
+    emi            = serializers.ReadOnlyField()
+    total_paid     = serializers.ReadOnlyField()
+    remaining      = serializers.ReadOnlyField()
+    is_active      = serializers.ReadOnlyField()
+    paid_count     = serializers.ReadOnlyField()
 
     class Meta:
         model = Loan
@@ -98,9 +98,9 @@ class LoanCreateSerializer(serializers.ModelSerializer):
 
 class CustomerListSerializer(serializers.ModelSerializer):
     active_loans_count = serializers.SerializerMethodField()
-    total_loan_amount = serializers.SerializerMethodField()
-    total_gold_weight = serializers.SerializerMethodField()
-    gold_items_count = serializers.SerializerMethodField()
+    total_loan_amount  = serializers.SerializerMethodField()
+    total_gold_weight  = serializers.SerializerMethodField()
+    gold_items_count   = serializers.SerializerMethodField()
 
     class Meta:
         model = Customer
@@ -108,11 +108,9 @@ class CustomerListSerializer(serializers.ModelSerializer):
             'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar', 'pan_card',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
             'total_gold_weight', 'gold_items_count',
-            # ML fields
             'ml_collateral_type', 'ml_collateral_description',
             'ml_property_address', 'ml_survey_number',
             'ml_collateral_value', 'ml_document_type',
-            # Proof
             'proof_description',
             'active_loans_count', 'total_loan_amount', 'created_at',
         ]
@@ -139,10 +137,10 @@ class CustomerListSerializer(serializers.ModelSerializer):
 # ═══════════════════════════════════════════════════════════════════════
 
 class CustomerDetailSerializer(serializers.ModelSerializer):
-    loans = LoanSerializer(many=True, read_only=True)
-    gold_items = GoldItemSerializer(many=True, read_only=True)
+    loans             = LoanSerializer(many=True, read_only=True)
+    gold_items        = GoldItemSerializer(many=True, read_only=True)
     total_gold_weight = serializers.SerializerMethodField()
-    total_gold_value = serializers.SerializerMethodField()
+    total_gold_value  = serializers.SerializerMethodField()
 
     class Meta:
         model = Customer
@@ -150,11 +148,9 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             'id', 'loan_type', 'name', 'phone', 'address', 'aadhaar', 'pan_card',
             'vehicle_type', 'vehicle_model', 'vehicle_number',
             'gold_items', 'total_gold_weight', 'total_gold_value',
-            # ML fields
             'ml_collateral_type', 'ml_collateral_description',
             'ml_property_address', 'ml_survey_number',
             'ml_collateral_value', 'ml_document_type',
-            # Proof
             'proof_description',
             'loans', 'created_at',
         ]
@@ -171,59 +167,35 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  CUSTOMER — CREATE  (vehicle + gold + ml, single API call)
+#  CUSTOMER — CREATE
 # ═══════════════════════════════════════════════════════════════════════
 
 class CustomerCreateSerializer(serializers.ModelSerializer):
-    # Loan fields
-    loan_amount = serializers.DecimalField(
-        max_digits=12, decimal_places=2, write_only=True
-    )
-    interest_rate = serializers.DecimalField(
-        max_digits=5, decimal_places=2, write_only=True, default=0
-    )
+    loan_amount   = serializers.DecimalField(max_digits=12, decimal_places=2, write_only=True)
+    interest_rate = serializers.DecimalField(max_digits=5, decimal_places=2, write_only=True, default=0)
     tenure_months = serializers.IntegerField(write_only=True, default=12)
-    loan_date = serializers.DateField(write_only=True, required=False)
-    fine_amount = serializers.DecimalField(
-        max_digits=10, decimal_places=2, write_only=True, default=0
-    )
-    guarantor_name = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
-    guarantor_phone = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
-    guarantor_address = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
-    guarantor_aadhaar = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
-    guarantor_relation = serializers.CharField(
-        write_only=True, required=False, allow_blank=True
-    )
+    loan_date     = serializers.DateField(write_only=True, required=False)
+    fine_amount   = serializers.DecimalField(max_digits=10, decimal_places=2, write_only=True, default=0)
 
-    # Gold items (required when loan_type='gold')
-    gold_items = GoldItemCreateSerializer(
-        many=True, write_only=True, required=False
-    )
+    guarantor_name     = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_phone    = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_address  = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_aadhaar  = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guarantor_relation = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    gold_items = GoldItemCreateSerializer(many=True, write_only=True, required=False)
 
     class Meta:
         model = Customer
         fields = [
             'id', 'loan_type',
             'name', 'phone', 'address', 'aadhaar', 'pan_card',
-            # Vehicle fields
             'vehicle_type', 'vehicle_model', 'vehicle_number',
-            # Gold fields
             'gold_items',
-            # ML fields
             'ml_collateral_type', 'ml_collateral_description',
             'ml_property_address', 'ml_survey_number',
             'ml_collateral_value', 'ml_document_type',
-            # Proof
             'proof_description',
-            # Loan fields
             'loan_amount', 'interest_rate', 'tenure_months', 'loan_date',
             'fine_amount',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
@@ -232,7 +204,6 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         loan_type = data.get('loan_type', 'vehicle')
-
         if loan_type == 'vehicle':
             if not data.get('vehicle_model', '').strip():
                 raise serializers.ValidationError(
@@ -258,25 +229,23 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {'ml_collateral_value': 'Collateral value must be greater than 0 for ML loans.'}
                 )
-
         return data
 
     def create(self, validated_data):
         loan_fields = {
-            'loan_amount':       validated_data.pop('loan_amount'),
-            'interest_rate':     validated_data.pop('interest_rate', 0),
-            'tenure_months':     validated_data.pop('tenure_months', 12),
-            'loan_date':         validated_data.pop('loan_date', timezone.now().date()),
-            'fine_amount':       validated_data.pop('fine_amount', 0),
-            'guarantor_name':    validated_data.pop('guarantor_name', ''),
-            'guarantor_phone':   validated_data.pop('guarantor_phone', ''),
-            'guarantor_address': validated_data.pop('guarantor_address', ''),
-            'guarantor_aadhaar': validated_data.pop('guarantor_aadhaar', ''),
-            'guarantor_relation':validated_data.pop('guarantor_relation', ''),
+            'loan_amount':        validated_data.pop('loan_amount'),
+            'interest_rate':      validated_data.pop('interest_rate', 0),
+            'tenure_months':      validated_data.pop('tenure_months', 12),
+            'loan_date':          validated_data.pop('loan_date', timezone.now().date()),
+            'fine_amount':        validated_data.pop('fine_amount', 0),
+            'guarantor_name':     validated_data.pop('guarantor_name', ''),
+            'guarantor_phone':    validated_data.pop('guarantor_phone', ''),
+            'guarantor_address':  validated_data.pop('guarantor_address', ''),
+            'guarantor_aadhaar':  validated_data.pop('guarantor_aadhaar', ''),
+            'guarantor_relation': validated_data.pop('guarantor_relation', ''),
         }
         gold_items_data = validated_data.pop('gold_items', [])
-
-        loan_type = validated_data.get('loan_type')
+        loan_type       = validated_data.get('loan_type')
 
         if loan_type == 'gold':
             validated_data['vehicle_type'] = ''
@@ -309,3 +278,61 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         generate_emi_schedule(loan)
 
         return customer
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  DAILY LEDGER SERIALIZERS
+# ═══════════════════════════════════════════════════════════════════════
+
+class DailyLedgerSerializer(serializers.ModelSerializer):
+    """Full read serializer — includes customer snapshot fields."""
+    customer_name  = serializers.SerializerMethodField()
+    customer_phone = serializers.SerializerMethodField()
+    loan_id        = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DailyLedger
+        fields = [
+            'id', 'entry_type', 'amount', 'description',
+            'loan_type', 'source', 'entry_date',
+            'customer',       # FK id (nullable)
+            'customer_name',  # snapshot
+            'customer_phone', # snapshot
+            'loan_id',        # FK id (nullable)
+            'emi_payment',    # FK id (nullable)
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'source', 'created_at', 'updated_at',
+                            'customer_name', 'customer_phone', 'loan_id']
+
+    def get_customer_name(self, obj):
+        return obj.customer.name if obj.customer else ''
+
+    def get_customer_phone(self, obj):
+        return obj.customer.phone if obj.customer else ''
+
+    def get_loan_id(self, obj):
+        return obj.loan.id if obj.loan else None
+
+
+class DailyLedgerCreateSerializer(serializers.ModelSerializer):
+    """Write serializer for manual entries. amount & entry_type required."""
+    class Meta:
+        model  = DailyLedger
+        fields = [
+            'entry_type', 'amount', 'description',
+            'loan_type', 'entry_date',
+            'customer', 'loan',
+        ]
+
+    def validate_amount(self, value):
+        if float(value) <= 0:
+            raise serializers.ValidationError('Amount must be greater than 0.')
+        return value
+
+
+class DailyLedgerUpdateSerializer(serializers.ModelSerializer):
+    """Partial update — only description, amount and entry_date are editable."""
+    class Meta:
+        model  = DailyLedger
+        fields = ['description', 'amount', 'entry_date', 'entry_type']
