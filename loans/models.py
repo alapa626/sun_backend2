@@ -60,6 +60,7 @@ LEDGER_ENTRY_TYPE_CHOICES = [
 LEDGER_SOURCE_CHOICES = [
     ('emi_payment',       'EMI Payment'),
     ('document_charge',   'Document Charge'),
+    ('loan_disbursement', 'Loan Disbursement'),  # ← NEW: auto debit when loan is given out
     ('manual',            'Manual Entry'),
 ]
 

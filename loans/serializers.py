@@ -233,7 +233,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
                     {'ml_collateral_value': 'Collateral value must be greater than 0 for ML loans.'}
                 )
 
-        doc_charge = float(data.get('document_charge', 0))
+        doc_charge  = float(data.get('document_charge', 0))
         loan_amount = float(data.get('loan_amount', 0))
         if doc_charge < 0:
             raise serializers.ValidationError(
@@ -292,16 +292,40 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         loan = Loan.objects.create(customer=customer, **loan_fields)
         generate_emi_schedule(loan)
 
-        # Auto-create credit ledger entry for document charge
+        # ── Build a human-readable loan label ─────────────────────────
+        loan_label = {
+            'vehicle': f"Vehicle Loan ({customer.vehicle_type} {customer.vehicle_model})".strip(),
+            'gold':    'Gold Loan',
+            'ml':      f"ML Loan ({customer.ml_collateral_type})".strip(),
+        }.get(customer.loan_type, 'Loan')
+
+        vendor = self.context['request'].user
+
+        # ── 1. DEBIT — loan amount disbursed to customer ───────────────
+        # Money going OUT of the lender's pocket.
+        # source='loan_disbursement' marks it as auto-created so the
+        # Flutter UI treats it as read-only (cannot edit/delete).
+        DailyLedger.objects.create(
+            vendor=vendor,
+            entry_type='debit',
+            amount=loan.loan_amount,
+            description=(
+                f"Loan disbursed to {customer.name} "
+                f"for {loan_label} — Loan #{loan.id}"
+            ),
+            customer=customer,
+            loan=loan,
+            loan_type=customer.loan_type,
+            source='loan_disbursement',
+            entry_date=loan.loan_date,
+        )
+
+        # ── 2. CREDIT — document charge collected upfront ──────────────
+        # Only created when a document charge was actually collected.
+        # source='document_charge' also marks it as auto-created / read-only.
         if float(loan.document_charge) > 0:
-            from .models import DailyLedger
-            loan_label = {
-                'vehicle': f"Vehicle Loan ({customer.vehicle_type} {customer.vehicle_model})".strip(),
-                'gold':    'Gold Loan',
-                'ml':      f"ML Loan ({customer.ml_collateral_type})".strip(),
-            }.get(customer.loan_type, 'Loan')
             DailyLedger.objects.create(
-                vendor=self.context['request'].user,
+                vendor=vendor,
                 entry_type='credit',
                 amount=loan.document_charge,
                 description=(
