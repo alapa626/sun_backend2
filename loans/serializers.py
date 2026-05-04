@@ -72,7 +72,9 @@ class LoanSerializer(serializers.ModelSerializer):
         model = Loan
         fields = [
             'id', 'customer', 'loan_amount', 'interest_rate',
-            'tenure_months', 'loan_date', 'fine_amount', 'document_charge',
+            'tenure_months', 'loan_date', 'fine_amount',
+            # ── document_charge MUST be in this list so Flutter can read it ──
+            'document_charge',
             'guarantor_name', 'guarantor_phone', 'guarantor_address',
             'guarantor_aadhaar', 'guarantor_relation',
             'total_interest', 'total_payable', 'emi',
@@ -178,6 +180,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
     tenure_months    = serializers.IntegerField(write_only=True, default=12)
     loan_date        = serializers.DateField(write_only=True, required=False)
     fine_amount      = serializers.DecimalField(max_digits=10, decimal_places=2, write_only=True, default=0)
+    # ── document_charge: Flutter now always sends this field ──────────────────
     document_charge  = serializers.DecimalField(max_digits=10, decimal_places=2, write_only=True, default=0)
 
     guarantor_name     = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -301,10 +304,8 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
 
         vendor = self.context['request'].user
 
-        # ── 1. DEBIT — loan amount disbursed to customer ───────────────
-        # Money going OUT of the lender's pocket.
-        # source='loan_disbursement' marks it as auto-created so the
-        # Flutter UI treats it as read-only (cannot edit/delete).
+        # ── 1. DEBIT — full loan amount disbursed out of lender's pocket ──────
+        # source='loan_disbursement' → Flutter treats as read-only (no edit/delete)
         DailyLedger.objects.create(
             vendor=vendor,
             entry_type='debit',
@@ -320,9 +321,12 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             entry_date=loan.loan_date,
         )
 
-        # ── 2. CREDIT — document charge collected upfront ──────────────
-        # Only created when a document charge was actually collected.
-        # source='document_charge' also marks it as auto-created / read-only.
+        # ── 2. CREDIT — document charge collected upfront (lender's profit) ───
+        # Only created when document_charge > 0.
+        # source='document_charge' → Flutter treats as read-only (no edit/delete)
+        # THIS IS THE KEY ENTRY that was missing before the fix.
+        # It was missing because Flutter never sent 'document_charge' in the
+        # POST body, so Django always received 0 and skipped this block.
         if float(loan.document_charge) > 0:
             DailyLedger.objects.create(
                 vendor=vendor,
