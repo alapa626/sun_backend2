@@ -210,11 +210,15 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         loan_type = data.get('loan_type', 'vehicle')
+
+        # ── Vehicle: model is required ────────────────────────────────
         if loan_type == 'vehicle':
             if not data.get('vehicle_model', '').strip():
                 raise serializers.ValidationError(
                     {'vehicle_model': 'Vehicle model is required for vehicle loans.'}
                 )
+
+        # ── Gold: at least one item with valid weight required ─────────
         elif loan_type == 'gold':
             gold_items = data.get('gold_items', [])
             if not gold_items:
@@ -226,16 +230,12 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError(
                         {'gold_items': 'Each gold item must have weight greater than 0.'}
                     )
-        elif loan_type == 'ml':
-            if not data.get('ml_collateral_type', '').strip():
-                raise serializers.ValidationError(
-                    {'ml_collateral_type': 'Collateral type is required for ML loans.'}
-                )
-            if float(data.get('ml_collateral_value', 0)) <= 0:
-                raise serializers.ValidationError(
-                    {'ml_collateral_value': 'Collateral value must be greater than 0 for ML loans.'}
-                )
 
+        # ── ML loan: ALL fields are optional — no validation required ──
+        # The frontend clearly marks all ML fields as optional and the
+        # owner can fill them as needed. Do not block save here.
+
+        # ── Document charge validation (applies to all loan types) ─────
         doc_charge  = float(data.get('document_charge', 0))
         loan_amount = float(data.get('loan_amount', 0))
         if doc_charge < 0:
@@ -246,6 +246,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'document_charge': 'Document charge must be less than loan amount.'}
             )
+
         return data
 
     def create(self, validated_data):
@@ -299,7 +300,7 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         loan_label = {
             'vehicle': f"Vehicle Loan ({customer.vehicle_type} {customer.vehicle_model})".strip(),
             'gold':    'Gold Loan',
-            'ml':      f"ML Loan ({customer.ml_collateral_type})".strip(),
+            'ml':      f"ML Loan ({customer.ml_collateral_type})".strip() if customer.ml_collateral_type else 'ML Loan',
         }.get(customer.loan_type, 'Loan')
 
         vendor = self.context['request'].user
@@ -324,9 +325,6 @@ class CustomerCreateSerializer(serializers.ModelSerializer):
         # ── 2. CREDIT — document charge collected upfront (lender's profit) ───
         # Only created when document_charge > 0.
         # source='document_charge' → Flutter treats as read-only (no edit/delete)
-        # THIS IS THE KEY ENTRY that was missing before the fix.
-        # It was missing because Flutter never sent 'document_charge' in the
-        # POST body, so Django always received 0 and skipped this block.
         if float(loan.document_charge) > 0:
             DailyLedger.objects.create(
                 vendor=vendor,
